@@ -1,0 +1,23 @@
+Metadata-Version: 2.2
+Name: payment_gateway
+Version: 0.1.0
+Summary: A shared payment gateway integration for Flask applications
+Home-page: 
+Author: Your Name
+Author-email: your.email@example.com
+Keywords: payment,gateway,razorpay,paypal,flask
+Classifier: Development Status :: 3 - Alpha
+Classifier: Intended Audience :: Developers
+Classifier: Programming Language :: Python :: 3
+Classifier: License :: OSI Approved :: MIT License
+Requires-Python: >=3.6
+Requires-Dist: razorpay
+Requires-Dist: Flask
+Requires-Dist: mysql-connector-python
+Dynamic: author
+Dynamic: author-email
+Dynamic: classifier
+Dynamic: keywords
+Dynamic: requires-dist
+Dynamic: requires-python
+Dynamic: summary

@@ -1,0 +1,3 @@
+razorpay
+Flask
+mysql-connector-python
