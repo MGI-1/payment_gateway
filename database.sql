@@ -1,3 +1,6 @@
+CREATE DATABASE battlecards;
+USE battlecards;
+
 CREATE TABLE `resource_usage` (
   `id` int NOT NULL AUTO_INCREMENT,
   `user_id` varchar(255) NOT NULL,
@@ -15,7 +18,7 @@ CREATE TABLE `resource_usage` (
   KEY `app_id` (`app_id`),
   KEY `billing_period_start` (`billing_period_start`,`billing_period_end`),
   CONSTRAINT `resource_usage_ibfk_1` FOREIGN KEY (`subscription_id`) REFERENCES `user_subscriptions` (`id`)
-)
+);
 
 CREATE TABLE `paypal_webhook_events` (
   `id` int NOT NULL AUTO_INCREMENT,
@@ -33,7 +36,7 @@ CREATE TABLE `paypal_webhook_events` (
   UNIQUE KEY `event_id` (`event_id`),
   KEY `paypal_subscription_id` (`paypal_subscription_id`),
   KEY `processed` (`processed`,`created_at`)
-)
+);
 
 CREATE TABLE `paypal_access_tokens` (
   `id` int NOT NULL AUTO_INCREMENT,
@@ -41,7 +44,7 @@ CREATE TABLE `paypal_access_tokens` (
   `expires_at` datetime NOT NULL,
   `created_at` datetime DEFAULT CURRENT_TIMESTAMP,
   PRIMARY KEY (`id`)
-)
+);
 
 CREATE TABLE `subscription_invoices` (
   `id` varchar(64) NOT NULL,
@@ -60,7 +63,7 @@ CREATE TABLE `subscription_invoices` (
   KEY `subscription_id` (`subscription_id`),
   KEY `user_id` (`user_id`),
   CONSTRAINT `subscription_invoices_ibfk_1` FOREIGN KEY (`subscription_id`) REFERENCES `user_subscriptions` (`id`)
-)
+);
 
 CREATE TABLE `subscription_plans` (
   `id` varchar(64) NOT NULL,
@@ -80,7 +83,7 @@ CREATE TABLE `subscription_plans` (
   `plan_type` enum('domestic','international') NOT NULL DEFAULT 'domestic',
   `payment_gateways` json DEFAULT NULL,
   PRIMARY KEY (`id`)
-)
+);
 
 CREATE TABLE `subscription_usage` (
   `id` int NOT NULL AUTO_INCREMENT,
@@ -98,7 +101,7 @@ CREATE TABLE `subscription_usage` (
   KEY `user_id` (`user_id`),
   KEY `subscription_id` (`subscription_id`),
   KEY `period_start` (`period_start`,`period_end`)
-)
+);
 
 CREATE TABLE `user_subscriptions` (
   `id` varchar(64) NOT NULL,
