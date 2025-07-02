@@ -117,15 +117,6 @@ class PaymentService:
                 cursor.close()
                 conn.close()
                 
-                # Create initial resource usage record
-                self._create_resource_usage_record(
-                    user_id, 
-                    subscription_id, 
-                    app_id,
-                    current_period_start,
-                    current_period_end
-                )
-                
                 return {
                     'id': subscription_id,
                     'user_id': user_id,
@@ -314,15 +305,7 @@ class PaymentService:
                     VALUES (%s, %s, %s, %s, 'active', %s, %s, %s)
                 """, (subscription_id, user_id, plan_id, paypal_subscription_id, 
                     start_date, period_end, app_id))
-            
-                # Create initial resource usage record
-                self._create_resource_usage_record(
-                    user_id, 
-                    subscription_id, 
-                    app_id,
-                    start_date,
-                    period_end
-                )
+        
             
             # Commit the transaction
             conn.commit()
@@ -672,15 +655,6 @@ class PaymentService:
             
             conn.commit()
             
-            # Create resource usage record for the new subscription period
-            self._create_resource_usage_record(
-                subscription['user_id'],
-                subscription['id'],
-                subscription['app_id'],
-                start_date,
-                period_end
-            )
-            
             cursor.close()
             conn.close()
             
@@ -779,15 +753,6 @@ class PaymentService:
             """, (new_start, new_end, json.dumps({
                 'subscription': subscription_data
             }), razorpay_subscription_id))
-            
-            # Create a new resource usage record with reset counters for this billing period
-            self._create_resource_usage_record(
-                subscription['user_id'],
-                subscription['id'],
-                subscription['app_id'],
-                new_start,
-                new_end
-            )
             
             # If we have invoice details, record the invoice
             if razorpay_invoice_id:
@@ -1109,14 +1074,6 @@ class PaymentService:
                 WHERE razorpay_subscription_id = %s
             """, (start_date, period_end, subscription_id))
             
-            # Create resource usage record
-            self._create_resource_usage_record(
-                user_id,
-                subscription['id'],
-                subscription['app_id'],
-                start_date,
-                period_end
-            )
             
             # Record payment if provided
             if payment_id:
