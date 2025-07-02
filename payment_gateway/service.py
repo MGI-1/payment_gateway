@@ -1653,3 +1653,7 @@ class PaymentService:
             logger.error(f"Error getting subscription by gateway ID: {str(e)}")
             logger.error(traceback.format_exc())
             return None
+        
+
+
+payment_service = PaymentService()
