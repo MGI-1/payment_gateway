@@ -1361,8 +1361,7 @@ class PaymentService:
                     SELECT document_pages_quota, perplexity_requests_quota
                     FROM {DB_TABLE_RESOURCE_USAGE}
                     WHERE user_id = %s AND subscription_id = %s AND app_id = %s
-                    AND NOW() BETWEEN billing_period_start AND billing_period_end
-                    ORDER BY billing_period_start DESC LIMIT 1
+                    
                 """, (user_id, subscription_id, app_id))
             else:  # saleswit
                 cursor.execute(f"""
