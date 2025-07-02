@@ -179,6 +179,120 @@ def init_payment_routes(app, payment_service):
             logger.error(f"Error getting billing history: {str(e)}")
             logger.error(traceback.format_exc())
             return jsonify({'error': str(e)}), 500
+        
+    # routes.py - Add new endpoint for checking and decrementing resource quota
+
+    @payment_bp.route('/check-resource', methods=['POST'])
+    def check_resource():
+        """Check if a user has enough resources for an action"""
+        try:
+            data = request.json
+            user_id = data.get('user_id')
+            app_id = data.get('app_id', 'marketfit')
+            resource_type = data.get('resource_type')
+            count = data.get('count', 1)
+            
+            if not all([user_id, resource_type]):
+                return jsonify({'error': 'User ID and resource type are required'}), 400
+                
+            result = payment_service.check_resource_availability(
+                user_id, app_id, resource_type, count
+            )
+            
+            if result:
+                return jsonify({'available': True})
+            else:
+                return jsonify({
+                    'available': False,
+                    'message': 'You have reached your resource limit for this billing period.'
+                })
+                
+        except Exception as e:
+            logger.error(f"Error checking resource availability: {str(e)}")
+            logger.error(traceback.format_exc())
+            return jsonify({'error': str(e)}), 500
+
+    @payment_bp.route('/decrement-resource', methods=['POST'])
+    def decrement_resource():
+        """Decrement resource quota for a user"""
+        try:
+            data = request.json
+            user_id = data.get('user_id')
+            app_id = data.get('app_id', 'marketfit')
+            resource_type = data.get('resource_type')
+            count = data.get('count', 1)
+            
+            if not all([user_id, resource_type]):
+                return jsonify({'error': 'User ID and resource type are required'}), 400
+                
+            result = payment_service.decrement_resource_quota(
+                user_id, app_id, resource_type, count
+            )
+            
+            if result:
+                return jsonify({'success': True})
+            else:
+                return jsonify({
+                    'success': False,
+                    'message': 'Failed to decrement resource quota. You may have reached your limit.'
+                })
+                
+        except Exception as e:
+            logger.error(f"Error decrementing resource quota: {str(e)}")
+            logger.error(traceback.format_exc())
+            return jsonify({'error': str(e)}), 500
+
+    @payment_bp.route('/resource-quota', methods=['GET'])
+    def get_resource_quota():
+        """Get resource quota for a user"""
+        try:
+            user_id = request.args.get('user_id')
+            app_id = request.args.get('app_id', 'marketfit')
+            
+            if not user_id:
+                return jsonify({'error': 'User ID is required'}), 400
+                
+            quota = payment_service.get_resource_quota(user_id, app_id)
+            return jsonify({'quota': quota})
+            
+        except Exception as e:
+            logger.error(f"Error getting resource quota: {str(e)}")
+            logger.error(traceback.format_exc())
+            return jsonify({'error': str(e)}), 500
+
+    @payment_bp.route('/initialize-quota', methods=['POST'])
+    def initialize_quota():
+        """Initialize or reset resource quota for a user"""
+        try:
+            data = request.json
+            user_id = data.get('user_id')
+            app_id = data.get('app_id', 'marketfit')
+            
+            if not user_id:
+                return jsonify({'error': 'User ID is required'}), 400
+            
+            # Get the user's active subscription
+            subscription = payment_service.get_user_subscription(user_id, app_id)
+            
+            if not subscription:
+                return jsonify({'error': 'No active subscription found'}), 404
+            
+            result = payment_service.initialize_resource_quota(
+                user_id, subscription['id'], app_id
+            )
+            
+            if result:
+                return jsonify({'success': True})
+            else:
+                return jsonify({
+                    'success': False,
+                    'message': 'Failed to initialize resource quota.'
+                })
+                
+        except Exception as e:
+            logger.error(f"Error initializing resource quota: {str(e)}")
+            logger.error(traceback.format_exc())
+            return jsonify({'error': str(e)}), 500
     
     @payment_bp.route('/record-paypal', methods=['POST'])
     def record_paypal_subscription():
