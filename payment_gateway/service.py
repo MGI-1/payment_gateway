@@ -685,12 +685,18 @@ class PaymentService:
             conn.close()
             
             logger.info(f"Subscription activated: {razorpay_subscription_id}")
-            # Initialize quota for the activated subscription
-            app_id = subscription.get('app_id', 'marketfit')
-            subscription_id = subscription.get('id')
-            user_id = subscription.get('user_id')
-            self.initialize_resource_quota(user_id, subscription_id, app_id)
-            logger.info(f"Initialized resource quota for subscription {subscription_id}")
+            
+            # Get user ID and app ID
+            user_id = subscription['user_id']
+            app_id = subscription['app_id']
+
+            # IMPORTANT: Initialize resource quota for the activated subscription
+            logger.info(f"Initializing resource quota for subscription {subscription['id']}")
+            quota_result = self.initialize_resource_quota(user_id, subscription['id'], app_id)
+            
+            if not quota_result:
+                logger.error(f"Failed to initialize resource quota for subscription {subscription['id']}")
+
             return {
                 'status': 'success', 
                 'message': 'Subscription activated',

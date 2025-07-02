@@ -193,9 +193,9 @@ class DatabaseManager:
             
             cursor.execute(f'''
                 INSERT INTO {DB_TABLE_SUBSCRIPTION_EVENTS}
-                (event_type, razorpay_entity_id, paypal_entity_id, user_id, data, processed)
-                VALUES (%s, %s, %s, %s, %s, %s)
-            ''', (event_type, razorpay_entity_id, paypal_entity_id, user_id, data_json, processed))
+                (event_type, razorpay_entity_id, user_id, data, processed)
+                VALUES (%s, %s, %s, %s, %s)
+            ''', (event_type, razorpay_entity_id, user_id, data_json, processed))
             
             conn.commit()
             cursor.close()
