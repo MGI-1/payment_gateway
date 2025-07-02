@@ -1347,10 +1347,10 @@ class PaymentService:
             
             subscription_result = cursor.fetchone()
             
-            if not subscription_result:
-                cursor.close()
-                conn.close()
-                return quota
+            # if not subscription_result:
+            #     cursor.close()
+            #     conn.close()
+            #     return quota
             
             subscription_id = subscription_result['id']
             
