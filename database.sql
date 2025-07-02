@@ -1,23 +1,45 @@
 CREATE DATABASE battlecards;
 USE battlecards;
 
-CREATE TABLE `resource_usage` (
-  `id` int NOT NULL AUTO_INCREMENT,
+CREATE TABLE `subscription_plans` (
+  `id` varchar(64) NOT NULL,
+  `name` varchar(255) NOT NULL,
+  `description` text,
+  `amount` int NOT NULL,
+  `currency` varchar(10) DEFAULT 'INR',
+  `interval` varchar(20) NOT NULL,
+  `interval_count` int DEFAULT '1',
+  `features` json DEFAULT NULL,
+  `app_id` varchar(50) DEFAULT NULL,
+  `paypal_plan_id` varchar(255) DEFAULT NULL,
+  `gateway_support` json DEFAULT NULL,
+  `is_active` tinyint(1) DEFAULT '1',
+  `created_at` datetime DEFAULT CURRENT_TIMESTAMP,
+  `razorpay_plan_id` varchar(255) DEFAULT NULL,
+  `plan_type` enum('domestic','international') NOT NULL DEFAULT 'domestic',
+  `payment_gateways` json DEFAULT NULL,
+  PRIMARY KEY (`id`)
+);
+
+CREATE TABLE `user_subscriptions` (
+  `id` varchar(64) NOT NULL,
   `user_id` varchar(255) NOT NULL,
-  `subscription_id` varchar(64) NOT NULL,
-  `app_id` varchar(50) NOT NULL DEFAULT 'marketfit',
-  `billing_period_start` datetime NOT NULL,
-  `billing_period_end` datetime NOT NULL,
-  `document_pages_count` int DEFAULT '0',
-  `perplexity_requests_count` int DEFAULT '0',
+  `plan_id` varchar(64) NOT NULL,
+  `razorpay_subscription_id` varchar(255) DEFAULT NULL,
+  `payment_gateway` varchar(20) DEFAULT 'razorpay',
+  `paypal_subscription_id` varchar(255) DEFAULT NULL,
+  `gateway_metadata` json DEFAULT NULL,
+  `status` varchar(50) NOT NULL,
+  `current_period_start` datetime DEFAULT NULL,
+  `current_period_end` datetime DEFAULT NULL,
+  `app_id` varchar(50) DEFAULT NULL,
   `created_at` datetime DEFAULT CURRENT_TIMESTAMP,
   `updated_at` datetime DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  `metadata` json DEFAULT NULL,
   PRIMARY KEY (`id`),
   KEY `user_id` (`user_id`),
-  KEY `subscription_id` (`subscription_id`),
-  KEY `app_id` (`app_id`),
-  KEY `billing_period_start` (`billing_period_start`,`billing_period_end`),
-  CONSTRAINT `resource_usage_ibfk_1` FOREIGN KEY (`subscription_id`) REFERENCES `user_subscriptions` (`id`)
+  KEY `plan_id` (`plan_id`),
+  CONSTRAINT `user_subscriptions_ibfk_1` FOREIGN KEY (`plan_id`) REFERENCES `subscription_plans` (`id`)
 );
 
 CREATE TABLE `paypal_webhook_events` (
@@ -65,25 +87,6 @@ CREATE TABLE `subscription_invoices` (
   CONSTRAINT `subscription_invoices_ibfk_1` FOREIGN KEY (`subscription_id`) REFERENCES `user_subscriptions` (`id`)
 );
 
-CREATE TABLE `subscription_plans` (
-  `id` varchar(64) NOT NULL,
-  `name` varchar(255) NOT NULL,
-  `description` text,
-  `amount` int NOT NULL,
-  `currency` varchar(10) DEFAULT 'INR',
-  `interval` varchar(20) NOT NULL,
-  `interval_count` int DEFAULT '1',
-  `features` json DEFAULT NULL,
-  `app_id` varchar(50) DEFAULT NULL,
-  `paypal_plan_id` varchar(255) DEFAULT NULL,
-  `gateway_support` json DEFAULT NULL,
-  `is_active` tinyint(1) DEFAULT '1',
-  `created_at` datetime DEFAULT CURRENT_TIMESTAMP,
-  `razorpay_plan_id` varchar(255) DEFAULT NULL,
-  `plan_type` enum('domestic','international') NOT NULL DEFAULT 'domestic',
-  `payment_gateways` json DEFAULT NULL,
-  PRIMARY KEY (`id`)
-);
 
 CREATE TABLE `subscription_usage` (
   `id` int NOT NULL AUTO_INCREMENT,
@@ -103,23 +106,22 @@ CREATE TABLE `subscription_usage` (
   KEY `period_start` (`period_start`,`period_end`)
 );
 
-CREATE TABLE `user_subscriptions` (
-  `id` varchar(64) NOT NULL,
+
+CREATE TABLE `resource_usage` (
+  `id` int NOT NULL AUTO_INCREMENT,
   `user_id` varchar(255) NOT NULL,
-  `plan_id` varchar(64) NOT NULL,
-  `razorpay_subscription_id` varchar(255) DEFAULT NULL,
-  `payment_gateway` varchar(20) DEFAULT 'razorpay',
-  `paypal_subscription_id` varchar(255) DEFAULT NULL,
-  `gateway_metadata` json DEFAULT NULL,
-  `status` varchar(50) NOT NULL,
-  `current_period_start` datetime DEFAULT NULL,
-  `current_period_end` datetime DEFAULT NULL,
-  `app_id` varchar(50) DEFAULT NULL,
+  `subscription_id` varchar(64) NOT NULL,
+  `app_id` varchar(50) NOT NULL DEFAULT 'marketfit',
+  `billing_period_start` datetime NOT NULL,
+  `billing_period_end` datetime NOT NULL,
+  `document_pages_count` int DEFAULT '0',
+  `perplexity_requests_count` int DEFAULT '0',
   `created_at` datetime DEFAULT CURRENT_TIMESTAMP,
   `updated_at` datetime DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
-  `metadata` json DEFAULT NULL,
   PRIMARY KEY (`id`),
   KEY `user_id` (`user_id`),
-  KEY `plan_id` (`plan_id`),
-  CONSTRAINT `user_subscriptions_ibfk_1` FOREIGN KEY (`plan_id`) REFERENCES `subscription_plans` (`id`)
+  KEY `subscription_id` (`subscription_id`),
+  KEY `app_id` (`app_id`),
+  KEY `billing_period_start` (`billing_period_start`,`billing_period_end`),
+  CONSTRAINT `resource_usage_ibfk_1` FOREIGN KEY (`subscription_id`) REFERENCES `user_subscriptions` (`id`)
 );
