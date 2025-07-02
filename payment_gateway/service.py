@@ -1321,6 +1321,7 @@ class PaymentService:
         Returns:
             dict: Resource quota
         """
+        logger.info(f"hello om")
         logger.info(f"Getting resource quota for user {user_id}, app {app_id}")
         
         try:
