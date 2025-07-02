@@ -1348,10 +1348,10 @@ class PaymentService:
             
             subscription_result = cursor.fetchone()
             
-            # if not subscription_result:
-            #     cursor.close()
-            #     conn.close()
-            #     return quota
+            if not subscription_result:
+                cursor.close()
+                conn.close()
+                return quota
             
             subscription_id = subscription_result['id']
             
@@ -1375,7 +1375,7 @@ class PaymentService:
             
             quota_result = cursor.fetchone()
             
-            logger.info(f"hello {quota_result} availability")
+            logger.info(f"hello {quota_result}, {user_id}, {subscription_id}, {app_id} availability")
 
             if quota_result:
                 # Update quota with remaining values
