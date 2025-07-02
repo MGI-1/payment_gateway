@@ -1374,6 +1374,8 @@ class PaymentService:
             
             quota_result = cursor.fetchone()
             
+            logger.info(f"hello {quota_result} availability")
+
             if quota_result:
                 # Update quota with remaining values
                 if app_id == 'marketfit':
@@ -1420,6 +1422,7 @@ class PaymentService:
             # Get the user's resource quota
             quota = self.get_resource_quota(user_id, app_id)
             
+            logger.info(f"Checking {quota} availability")
             # Check if the quota is enough for the requested count
             if resource_type in quota:
                 return quota[resource_type] >= count
