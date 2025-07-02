@@ -126,43 +126,6 @@ def init_payment_routes(app, payment_service):
             logger.error(traceback.format_exc())
             return jsonify({'error': str(e)}), 500
 
-    @payment_bp.route('/usage-stats', methods=['GET'])
-    def get_usage_stats():
-        """Get usage statistics for a user"""
-        try:
-            user_id = request.args.get('user_id')
-            app_id = request.args.get('app_id', 'marketfit')
-            
-            if not user_id:
-                return jsonify({'error': 'User ID is required'}), 400
-                
-            stats = payment_service.get_usage_stats(user_id, app_id)
-            return jsonify({'usage': stats})
-        except Exception as e:
-            logger.error(f"Error getting usage stats: {str(e)}")
-            logger.error(traceback.format_exc())
-            return jsonify({'error': str(e)}), 500
-
-    @payment_bp.route('/increment-usage', methods=['POST'])
-    def increment_usage():
-        """Increment resource usage for a user"""
-        try:
-            data = request.json
-            user_id = data.get('user_id')
-            app_id = data.get('app_id', 'marketfit')
-            resource_type = data.get('resource_type')
-            count = data.get('count', 1)
-            
-            if not all([user_id, resource_type]):
-                return jsonify({'error': 'User ID and resource type are required'}), 400
-                
-            result = payment_service.increment_resource_usage(user_id, app_id, resource_type, count)
-            return jsonify({'success': result})
-        except Exception as e:
-            logger.error(f"Error incrementing resource usage: {str(e)}")
-            logger.error(traceback.format_exc())
-            return jsonify({'error': str(e)}), 500
-
     @payment_bp.route('/billing-history', methods=['GET'])
     def get_billing_history():
         """Get billing history for a user"""

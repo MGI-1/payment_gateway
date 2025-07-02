@@ -1215,6 +1215,8 @@ class PaymentService:
                     'requests': 20  # SalesWit only has request parameter
                 }
 
+    # service.py - Updated initialize_resource_quota function
+
     def initialize_resource_quota(self, user_id, subscription_id, app_id):
         """
         Initialize or reset resource quota for a subscription period
@@ -1233,9 +1235,9 @@ class PaymentService:
             conn = self.db.get_connection()
             cursor = conn.cursor(dictionary=True)
             
-            # Get subscription details to get billing period dates
+            # Get subscription details to get billing period dates and plan features
             cursor.execute(f"""
-                SELECT us.*, sp.features 
+                SELECT us.*, sp.features, sp.app_id 
                 FROM {DB_TABLE_USER_SUBSCRIPTIONS} us
                 JOIN {DB_TABLE_SUBSCRIPTION_PLANS} sp ON us.plan_id = sp.id
                 WHERE us.id = %s
@@ -1250,7 +1252,14 @@ class PaymentService:
                 return False
             
             # Parse features
-            features = parse_json_field(subscription.get('features', '{}'))
+            features_str = subscription.get('features', '{}')
+            if isinstance(features_str, str):
+                try:
+                    features = json.loads(features_str)
+                except json.JSONDecodeError:
+                    features = {}
+            else:
+                features = features_str or {}
             
             # Set the quota based on app
             if app_id == 'marketfit':
@@ -1261,6 +1270,27 @@ class PaymentService:
                 document_pages_quota = 0  # Not used for SalesWit
                 perplexity_requests_quota = 0  # Not used for SalesWit
                 requests_quota = features.get('requests', 20)
+            
+            # Log quota values for debugging
+            logger.info(f"Setting quota for {app_id}: doc_pages={document_pages_quota}, perplexity={perplexity_requests_quota}, requests={requests_quota}")
+            
+            # Make sure billing period dates are available
+            if not subscription.get('current_period_start') or not subscription.get('current_period_end'):
+                # Set default billing period if not available
+                current_period_start = datetime.now()
+                current_period_end = current_period_start + timedelta(days=30)  # Default to 30 days
+                
+                # Update subscription with billing period
+                cursor.execute(f"""
+                    UPDATE {DB_TABLE_USER_SUBSCRIPTIONS}
+                    SET current_period_start = %s, current_period_end = %s
+                    WHERE id = %s
+                """, (current_period_start, current_period_end, subscription_id))
+                
+                conn.commit()
+            else:
+                current_period_start = subscription['current_period_start']
+                current_period_end = subscription['current_period_end']
             
             # Check if there's an existing quota record for this billing period
             cursor.execute(f"""
@@ -1286,6 +1316,7 @@ class PaymentService:
                     requests_quota,
                     quota_record['id']
                 ))
+                logger.info(f"Updated existing quota record {quota_record['id']}")
             else:
                 # Create a new record
                 cursor.execute(f"""
@@ -1297,12 +1328,13 @@ class PaymentService:
                     user_id,
                     subscription_id,
                     app_id,
-                    subscription['current_period_start'],
-                    subscription['current_period_end'],
+                    current_period_start,
+                    current_period_end,
                     document_pages_quota,
                     perplexity_requests_quota,
                     requests_quota
                 ))
+                logger.info(f"Created new quota record for subscription {subscription_id}")
             
             conn.commit()
             cursor.close()
@@ -1602,59 +1634,59 @@ class PaymentService:
 
 # service.py - Add method to get subscription by gateway ID
 
-def get_subscription_by_gateway_id(self, gateway_sub_id, provider):
-    """
-    Get a subscription by its payment gateway subscription ID
-    
-    Args:
-        gateway_sub_id: The gateway subscription ID
-        provider: The payment gateway provider ('razorpay' or 'paypal')
+    def get_subscription_by_gateway_id(self, gateway_sub_id, provider):
+        """
+        Get a subscription by its payment gateway subscription ID
         
-    Returns:
-        dict: Subscription details or None if not found
-    """
-    logger.info(f"Getting subscription by {provider} ID: {gateway_sub_id}")
-    
-    try:
-        conn = self.db.get_connection()
-        cursor = conn.cursor(dictionary=True)
+        Args:
+            gateway_sub_id: The gateway subscription ID
+            provider: The payment gateway provider ('razorpay' or 'paypal')
+            
+        Returns:
+            dict: Subscription details or None if not found
+        """
+        logger.info(f"Getting subscription by {provider} ID: {gateway_sub_id}")
         
-        # Different column name based on provider
-        if provider == 'razorpay':
-            id_column = 'razorpay_subscription_id'
-        elif provider == 'paypal':
-            id_column = 'paypal_subscription_id'
-        else:
-            logger.error(f"Unknown payment provider: {provider}")
+        try:
+            conn = self.db.get_connection()
+            cursor = conn.cursor(dictionary=True)
+            
+            # Different column name based on provider
+            if provider == 'razorpay':
+                id_column = 'razorpay_subscription_id'
+            elif provider == 'paypal':
+                id_column = 'paypal_subscription_id'
+            else:
+                logger.error(f"Unknown payment provider: {provider}")
+                cursor.close()
+                conn.close()
+                return None
+            
+            # Get the subscription with the gateway ID
+            cursor.execute(f"""
+                SELECT us.*, sp.name as plan_name, sp.features, sp.amount, sp.currency, sp.interval 
+                FROM {DB_TABLE_USER_SUBSCRIPTIONS} us
+                JOIN {DB_TABLE_SUBSCRIPTION_PLANS} sp ON us.plan_id = sp.id
+                WHERE us.{id_column} = %s
+                ORDER BY us.updated_at DESC LIMIT 1
+            """, (gateway_sub_id,))
+            
+            subscription = cursor.fetchone()
+            
             cursor.close()
             conn.close()
-            return None
-        
-        # Get the subscription with the gateway ID
-        cursor.execute(f"""
-            SELECT us.*, sp.name as plan_name, sp.features, sp.amount, sp.currency, sp.interval 
-            FROM {DB_TABLE_USER_SUBSCRIPTIONS} us
-            JOIN {DB_TABLE_SUBSCRIPTION_PLANS} sp ON us.plan_id = sp.id
-            WHERE us.{id_column} = %s
-            ORDER BY us.updated_at DESC LIMIT 1
-        """, (gateway_sub_id,))
-        
-        subscription = cursor.fetchone()
-        
-        cursor.close()
-        conn.close()
-        
-        # Parse JSON fields
-        if subscription:
-            if subscription.get('features'):
-                subscription['features'] = parse_json_field(subscription['features'])
             
-            if subscription.get('metadata'):
-                subscription['metadata'] = parse_json_field(subscription['metadata'])
-        
-        return subscription
-        
-    except Exception as e:
-        logger.error(f"Error getting subscription by gateway ID: {str(e)}")
-        logger.error(traceback.format_exc())
-        return None
+            # Parse JSON fields
+            if subscription:
+                if subscription.get('features'):
+                    subscription['features'] = parse_json_field(subscription['features'])
+                
+                if subscription.get('metadata'):
+                    subscription['metadata'] = parse_json_field(subscription['metadata'])
+            
+            return subscription
+            
+        except Exception as e:
+            logger.error(f"Error getting subscription by gateway ID: {str(e)}")
+            logger.error(traceback.format_exc())
+            return None
