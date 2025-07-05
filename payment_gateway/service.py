@@ -117,15 +117,6 @@ class PaymentService:
                 cursor.close()
                 conn.close()
                 
-                # Create initial resource usage record
-                self._create_resource_usage_record(
-                    user_id, 
-                    subscription_id, 
-                    app_id,
-                    current_period_start,
-                    current_period_end
-                )
-                
                 return {
                     'id': subscription_id,
                     'user_id': user_id,
@@ -225,7 +216,7 @@ class PaymentService:
             conn.commit()
             cursor.close()
             conn.close()
-            
+                
             # Return the subscription with the checkout URL if available
             return {
                 'id': subscription_id,
@@ -314,15 +305,7 @@ class PaymentService:
                     VALUES (%s, %s, %s, %s, 'active', %s, %s, %s)
                 """, (subscription_id, user_id, plan_id, paypal_subscription_id, 
                     start_date, period_end, app_id))
-            
-                # Create initial resource usage record
-                self._create_resource_usage_record(
-                    user_id, 
-                    subscription_id, 
-                    app_id,
-                    start_date,
-                    period_end
-                )
+        
             
             # Commit the transaction
             conn.commit()
@@ -339,6 +322,8 @@ class PaymentService:
             
             cursor.close()
             conn.close()
+
+
             
             return subscription
         except Exception as e:
@@ -670,19 +655,22 @@ class PaymentService:
             
             conn.commit()
             
-            # Create resource usage record for the new subscription period
-            self._create_resource_usage_record(
-                subscription['user_id'],
-                subscription['id'],
-                subscription['app_id'],
-                start_date,
-                period_end
-            )
-            
             cursor.close()
             conn.close()
             
             logger.info(f"Subscription activated: {razorpay_subscription_id}")
+            
+            # Get user ID and app ID
+            user_id = subscription['user_id']
+            app_id = subscription['app_id']
+
+            # IMPORTANT: Initialize resource quota for the activated subscription
+            logger.info(f"Initializing resource quota for subscription {subscription['id']}")
+            quota_result = self.initialize_resource_quota(user_id, subscription['id'], app_id)
+            
+            if not quota_result:
+                logger.error(f"Failed to initialize resource quota for subscription {subscription['id']}")
+
             return {
                 'status': 'success', 
                 'message': 'Subscription activated',
@@ -765,15 +753,6 @@ class PaymentService:
             """, (new_start, new_end, json.dumps({
                 'subscription': subscription_data
             }), razorpay_subscription_id))
-            
-            # Create a new resource usage record with reset counters for this billing period
-            self._create_resource_usage_record(
-                subscription['user_id'],
-                subscription['id'],
-                subscription['app_id'],
-                new_start,
-                new_end
-            )
             
             # If we have invoice details, record the invoice
             if razorpay_invoice_id:
@@ -911,49 +890,6 @@ class PaymentService:
             logger.error(traceback.format_exc())
             return {'status': 'error', 'message': str(e)}
     
-    def _create_resource_usage_record(self, user_id, subscription_id, app_id, period_start, period_end):
-        """
-        Create a new resource usage record with reset counters
-        
-        Args:
-            user_id: User ID
-            subscription_id: Subscription ID
-            app_id: Application ID
-            period_start: Billing period start date
-            period_end: Billing period end date
-            
-        Returns:
-            bool: Success status
-        """
-        try:
-            conn = self.db.get_connection()
-            cursor = conn.cursor()
-            
-            cursor.execute(f"""
-                INSERT INTO {DB_TABLE_RESOURCE_USAGE}
-                (user_id, subscription_id, app_id, billing_period_start, billing_period_end, 
-                document_pages_count, perplexity_requests_count)
-                VALUES (%s, %s, %s, %s, %s, 0, 0)
-            """, (
-                user_id,
-                subscription_id,
-                app_id,
-                period_start,
-                period_end
-            ))
-            
-            conn.commit()
-            cursor.close()
-            conn.close()
-            
-            logger.info(f"Resource usage record created for user {user_id}, subscription {subscription_id}")
-            return True
-            
-        except Exception as e:
-            logger.error(f"Error creating resource usage record: {str(e)}")
-            logger.error(traceback.format_exc())
-            return False
-    
     def cancel_subscription(self, user_id, subscription_id):
         """
         Cancel a user's subscription at the end of the billing cycle,
@@ -1045,260 +981,7 @@ class PaymentService:
             logger.error(f"Error scheduling subscription cancellation: {str(e)}")
             logger.error(traceback.format_exc())
             raise
-    
-    def get_resource_usage(self, user_id, app_id):
-        """
-        Get resource usage for a user in the current billing period
-        
-        Args:
-            user_id: The user's ID
-            app_id: The application ID
-            
-        Returns:
-            dict: Resource usage stats
-        """
-        logger.info(f"Getting resource usage for user {user_id}, app {app_id}")
-        
-        try:
-            conn = self.db.get_connection()
-            cursor = conn.cursor(dictionary=True)
-            
-            # Initialize usage object
-            usage = {
-                'document_pages': 0,
-                'perplexity_requests': 0
-            }
-            
-            # Get the user's active subscription
-            cursor.execute(f"""
-                SELECT id FROM {DB_TABLE_USER_SUBSCRIPTIONS}
-                WHERE user_id = %s AND app_id = %s AND status = 'active'
-                ORDER BY current_period_end DESC LIMIT 1
-            """, (user_id, app_id))
-            
-            subscription_result = cursor.fetchone()
-            
-            if subscription_result:
-                subscription_id = subscription_result['id']
-                
-                # Get usage from the tracking table for the current billing period
-                cursor.execute(f"""
-                    SELECT document_pages_count, perplexity_requests_count
-                    FROM {DB_TABLE_RESOURCE_USAGE}
-                    WHERE user_id = %s AND subscription_id = %s AND app_id = %s
-                    AND NOW() BETWEEN billing_period_start AND billing_period_end
-                    ORDER BY billing_period_start DESC LIMIT 1
-                """, (user_id, subscription_id, app_id))
-                
-                usage_result = cursor.fetchone()
-                
-                if usage_result:
-                    # Use tracked usage
-                    usage['document_pages'] = usage_result['document_pages_count']
-                    usage['perplexity_requests'] = usage_result['perplexity_requests_count']
-            
-            cursor.close()
-            conn.close()
-            
-            return usage
-            
-        except Exception as e:
-            logger.error(f"Error getting resource usage: {str(e)}")
-            logger.error(traceback.format_exc())
-            return {
-                'document_pages': 0,
-                'perplexity_requests': 0
-            }
-    
-    def increment_resource_usage(self, user_id, app_id, resource_type, count=1):
-        """
-        Increment resource usage count for a user
-        
-        Args:
-            user_id: The user's ID
-            app_id: The application ID
-            resource_type: The type of resource (document_pages, perplexity_requests)
-            count: Amount to increment by
-            
-        Returns:
-            bool: Success status
-        """
-        logger.info(f"Incrementing {resource_type} usage for user {user_id}, app {app_id} by {count}")
-        
-        try:
-            conn = self.db.get_connection()
-            cursor = conn.cursor(dictionary=True)
-            
-            # Get the user's active subscription
-            cursor.execute(f"""
-                SELECT id, current_period_start, current_period_end FROM {DB_TABLE_USER_SUBSCRIPTIONS}
-                WHERE user_id = %s AND app_id = %s AND status = 'active'
-                ORDER BY current_period_end DESC LIMIT 1
-            """, (user_id, app_id))
-            
-            subscription = cursor.fetchone()
-            
-            if not subscription:
-                # No active subscription found, no need to track
-                cursor.close()
-                conn.close()
-                return False
-            
-            # Check if there's an existing usage record for this billing period
-            cursor.execute(f"""
-                SELECT id FROM {DB_TABLE_RESOURCE_USAGE}
-                WHERE user_id = %s AND subscription_id = %s AND app_id = %s
-                AND NOW() BETWEEN billing_period_start AND billing_period_end
-            """, (user_id, subscription['id'], app_id))
-            
-            usage_record = cursor.fetchone()
-            
-            if usage_record:
-                # Update existing record
-                column_name = f"{resource_type}_count"
-                cursor.execute(f"""
-                    UPDATE {DB_TABLE_RESOURCE_USAGE}
-                    SET {column_name} = {column_name} + %s,
-                        updated_at = NOW()
-                    WHERE id = %s
-                """, (count, usage_record['id']))
-            else:
-                # Create a new record
-                # Initialize all counts to 0
-                counts = {
-                    'document_pages_count': 0,
-                    'perplexity_requests_count': 0
-                }
-                
-                # Set the requested resource type count
-                counts[f"{resource_type}_count"] = count
-                
-                cursor.execute(f"""
-                    INSERT INTO {DB_TABLE_RESOURCE_USAGE}
-                    (user_id, subscription_id, app_id, billing_period_start, billing_period_end,
-                    document_pages_count, perplexity_requests_count)
-                    VALUES (%s, %s, %s, %s, %s, %s, %s)
-                """, (
-                    user_id,
-                    subscription['id'],
-                    app_id,
-                    subscription['current_period_start'],
-                    subscription['current_period_end'],
-                    counts['document_pages_count'],
-                    counts['perplexity_requests_count']
-                ))
-            
-            conn.commit()
-            cursor.close()
-            conn.close()
-            
-            return True
-            
-        except Exception as e:
-            logger.error(f"Error incrementing resource usage: {str(e)}")
-            logger.error(traceback.format_exc())
-            return False
-    
-    def get_usage_stats(self, user_id, app_id):
-        """
-        Get usage statistics for a user
-        
-        Args:
-            user_id: The user's ID
-            app_id: The application ID
-            
-        Returns:
-            dict: Usage statistics
-        """
-        logger.info(f"Getting usage stats for user {user_id}, app {app_id}")
-        
-        try:
-            conn = self.db.get_connection()
-            cursor = conn.cursor(dictionary=True)
-            
-            stats = {
-                'documents': 0,
-                'battlecards': 0,
-                'queries': 0,
-                'users': 0,
-                'document_pages': 0,
-                'perplexity_requests': 0
-            }
-            
-            # Get resource usage from resource_usage table
-            resource_usage = self.get_resource_usage(user_id, app_id)
-            if resource_usage:
-                stats['document_pages'] = resource_usage['document_pages']
-                stats['perplexity_requests'] = resource_usage['perplexity_requests']
-            
-            # Count documents
-            if app_id == 'marketfit':
-                cursor.execute("""
-                    SELECT COUNT(*) as count FROM document_content
-                    WHERE user_id = %s
-                """, (user_id,))
-            else:
-                cursor.execute("""
-                    SELECT COUNT(*) as count FROM documents
-                    WHERE user_id = %s
-                """, (user_id,))
-            
-            result = cursor.fetchone()
-            if result:
-                stats['documents'] = result['count']
-            
-            # Count battlecards/queries
-            if app_id == 'marketfit':
-                cursor.execute("""
-                    SELECT COUNT(DISTINCT scrape_id) as count 
-                    FROM battlecards b
-                    JOIN scrape_history s ON b.scrape_id = s.id
-                    WHERE s.user_id = %s
-                """, (user_id,))
-                
-                result = cursor.fetchone()
-                if result:
-                    stats['battlecards'] = result['count']
-            else:
-                cursor.execute("""
-                    SELECT COUNT(*) as count FROM perplexity_queries
-                    WHERE user_id = %s
-                """, (user_id,))
-                
-                result = cursor.fetchone()
-                if result:
-                    stats['queries'] = result['count']
-            
-            # Count organization users
-            cursor.execute("""
-                SELECT o.id FROM organizations o
-                JOIN organization_users ou ON o.id = ou.organization_id
-                WHERE ou.user_id = %s AND ou.role = 'admin'
-            """, (user_id,))
-            
-            org_result = cursor.fetchone()
-            if org_result:
-                org_id = org_result['id']
-                
-                cursor.execute("""
-                    SELECT COUNT(*) as count FROM organization_users
-                    WHERE organization_id = %s
-                """, (org_id,))
-                
-                result = cursor.fetchone()
-                if result:
-                    stats['users'] = result['count']
-            
-            cursor.close()
-            conn.close()
-            
-            return stats
-            
-        except Exception as e:
-            logger.error(f"Error getting usage stats: {str(e)}")
-            logger.error(traceback.format_exc())
-            return stats  # Return the stats object with default values
-    
+       
     def get_billing_history(self, user_id, app_id):
         """
         Get billing history for a user
@@ -1391,14 +1074,6 @@ class PaymentService:
                 WHERE razorpay_subscription_id = %s
             """, (start_date, period_end, subscription_id))
             
-            # Create resource usage record
-            self._create_resource_usage_record(
-                user_id,
-                subscription['id'],
-                subscription['app_id'],
-                start_date,
-                period_end
-            )
             
             # Record payment if provided
             if payment_id:
@@ -1440,3 +1115,548 @@ class PaymentService:
             logger.error(f"Error manually activating subscription: {str(e)}")
             logger.error(traceback.format_exc())
             return {'status': 'error', 'message': str(e)}
+        
+    # service.py - Updated resource tracking mechanism
+
+    def get_resource_limits(self, user_id, app_id):
+        """
+        Get resource limits for a user based on their subscription plan
+        
+        Args:
+            user_id: The user's ID
+            app_id: The application ID
+            
+        Returns:
+            dict: Resource limits
+        """
+        logger.info(f"Getting resource limits for user {user_id}, app {app_id}")
+        
+        try:
+            # Get the user's active subscription
+            subscription = self.get_user_subscription(user_id, app_id)
+            
+            if not subscription:
+                # Default limits for free plan
+                if app_id == 'marketfit':
+                    return {
+                        'document_pages': 50,
+                        'perplexity_requests': 20
+                    }
+                else:  # saleswit
+                    return {
+                        'requests': 20  # SalesWit only has request parameter
+                    }
+            
+            # Get limits from subscription features
+            features = subscription.get('features', {})
+            if isinstance(features, str):
+                import json
+                features = json.loads(features)
+            
+            # Return appropriate limits based on app
+            if app_id == 'marketfit':
+                return {
+                    'document_pages': features.get('document_pages', 50),
+                    'perplexity_requests': features.get('perplexity_requests', 20)
+                }
+            else:  # saleswit
+                return {
+                    'requests': features.get('requests', 20)  # SalesWit only has request parameter
+                }
+                
+        except Exception as e:
+            logger.error(f"Error getting resource limits: {str(e)}")
+            logger.error(traceback.format_exc())
+            # Return default limits on error
+            if app_id == 'marketfit':
+                return {
+                    'document_pages': 50,
+                    'perplexity_requests': 20
+                }
+            else:  # saleswit
+                return {
+                    'requests': 20  # SalesWit only has request parameter
+                }
+
+    # service.py - Updated initialize_resource_quota function
+
+    def initialize_resource_quota(self, user_id, subscription_id, app_id):
+        """
+        Initialize or reset resource quota for a subscription period
+        
+        Args:
+            user_id: The user's ID
+            subscription_id: The subscription ID
+            app_id: The application ID
+            
+        Returns:
+            bool: Success status
+        """
+        logger.info(f"Initializing resource quota for user {user_id}, subscription {subscription_id}")
+        
+        try:
+            conn = self.db.get_connection()
+            cursor = conn.cursor(dictionary=True)
+            
+            # Get subscription details to get billing period dates and plan features
+            cursor.execute(f"""
+                SELECT us.*, sp.features, sp.app_id 
+                FROM {DB_TABLE_USER_SUBSCRIPTIONS} us
+                JOIN {DB_TABLE_SUBSCRIPTION_PLANS} sp ON us.plan_id = sp.id
+                WHERE us.id = %s
+            """, (subscription_id,))
+            
+            subscription = cursor.fetchone()
+            
+            if not subscription:
+                logger.error(f"Subscription {subscription_id} not found")
+                cursor.close()
+                conn.close()
+                return False
+            
+            # Parse features
+            features_str = subscription.get('features', '{}')
+            if isinstance(features_str, str):
+                try:
+                    features = json.loads(features_str)
+                except json.JSONDecodeError:
+                    features = {}
+            else:
+                features = features_str or {}
+            
+            # Set the quota based on app
+            if app_id == 'marketfit':
+                document_pages_quota = features.get('document_pages', 50)
+                perplexity_requests_quota = features.get('perplexity_requests', 20)
+                requests_quota = 0  # Not used for MarketFit
+            else:  # saleswit
+                document_pages_quota = 0  # Not used for SalesWit
+                perplexity_requests_quota = 0  # Not used for SalesWit
+                requests_quota = features.get('requests', 20)
+            
+            # Log quota values for debugging
+            logger.info(f"Setting quota for {app_id}: doc_pages={document_pages_quota}, perplexity={perplexity_requests_quota}, requests={requests_quota}")
+            
+            # Make sure billing period dates are available
+            if not subscription.get('current_period_start') or not subscription.get('current_period_end'):
+                # Set default billing period if not available
+                current_period_start = datetime.now()
+                current_period_end = current_period_start + timedelta(days=30)  # Default to 30 days
+                
+                # Update subscription with billing period
+                cursor.execute(f"""
+                    UPDATE {DB_TABLE_USER_SUBSCRIPTIONS}
+                    SET current_period_start = %s, current_period_end = %s
+                    WHERE id = %s
+                """, (current_period_start, current_period_end, subscription_id))
+                
+                conn.commit()
+            else:
+                current_period_start = subscription['current_period_start']
+                current_period_end = subscription['current_period_end']
+            
+            # Check if there's an existing quota record for this billing period
+            cursor.execute(f"""
+                SELECT id FROM {DB_TABLE_RESOURCE_USAGE}
+                WHERE user_id = %s AND subscription_id = %s AND app_id = %s
+                AND NOW() BETWEEN billing_period_start AND billing_period_end
+            """, (user_id, subscription_id, app_id))
+            
+            quota_record = cursor.fetchone()
+            
+            if quota_record:
+                # Update existing record - reset quotas
+                cursor.execute(f"""
+                    UPDATE {DB_TABLE_RESOURCE_USAGE}
+                    SET document_pages_quota = %s,
+                        perplexity_requests_quota = %s,
+                        requests_quota = %s,
+                        updated_at = NOW()
+                    WHERE id = %s
+                """, (
+                    document_pages_quota,
+                    perplexity_requests_quota,
+                    requests_quota,
+                    quota_record['id']
+                ))
+                logger.info(f"Updated existing quota record {quota_record['id']}")
+            else:
+                # Create a new record
+                cursor.execute(f"""
+                    INSERT INTO {DB_TABLE_RESOURCE_USAGE}
+                    (user_id, subscription_id, app_id, billing_period_start, billing_period_end,
+                    document_pages_quota, perplexity_requests_quota, requests_quota)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+                """, (
+                    user_id,
+                    subscription_id,
+                    app_id,
+                    current_period_start,
+                    current_period_end,
+                    document_pages_quota,
+                    perplexity_requests_quota,
+                    requests_quota
+                ))
+                logger.info(f"Created new quota record for subscription {subscription_id}")
+            
+            conn.commit()
+            cursor.close()
+            conn.close()
+            
+            return True
+            
+        except Exception as e:
+            logger.error(f"Error initializing resource quota: {str(e)}")
+            logger.error(traceback.format_exc())
+            return False
+
+    def get_resource_quota(self, user_id, app_id):
+        """
+        Get remaining resource quota for a user in the current billing period
+        
+        Args:
+            user_id: The user's ID
+            app_id: The application ID
+            
+        Returns:
+            dict: Resource quota
+        """
+        logger.info(f"hello om")
+        logger.info(f"Getting resource quota for user {user_id}, app {app_id}")
+        
+        try:
+            conn = self.db.get_connection()
+            cursor = conn.cursor(dictionary=True)
+            
+            # Initialize quota object based on app
+            if app_id == 'marketfit':
+                quota = {
+                    'document_pages': 0,
+                    'perplexity_requests': 0
+                }
+            else:  # saleswit
+                quota = {
+                    'requests': 0
+                }
+            
+            # Get the user's active subscription
+            cursor.execute(f"""
+                SELECT id FROM {DB_TABLE_USER_SUBSCRIPTIONS}
+                WHERE user_id = %s AND app_id = %s AND status = 'active'
+                ORDER BY current_period_end DESC LIMIT 1
+            """, (user_id, app_id))
+            
+            subscription_result = cursor.fetchone()
+            
+            if not subscription_result:
+                cursor.close()
+                conn.close()
+                return quota
+            
+            subscription_id = subscription_result['id']
+            
+            # Get quota from the tracking table for the current billing period
+            if app_id == 'marketfit':
+                cursor.execute(f"""
+                    SELECT document_pages_quota, perplexity_requests_quota
+                    FROM {DB_TABLE_RESOURCE_USAGE}
+                    WHERE user_id = %s AND subscription_id = %s AND app_id = %s
+                    
+                """, (user_id, subscription_id, app_id))
+            else:  # saleswit
+                cursor.execute(f"""
+                    SELECT requests_quota
+                    FROM {DB_TABLE_RESOURCE_USAGE}
+                    WHERE user_id = %s AND subscription_id = %s AND app_id = %s
+                    AND NOW() BETWEEN billing_period_start AND billing_period_end
+                    ORDER BY billing_period_start DESC LIMIT 1
+                """, (user_id, subscription_id, app_id))
+            
+            quota_result = cursor.fetchone()
+            
+            logger.info(f"hello {quota_result}, {user_id}, {subscription_id}, {app_id} availability")
+
+            if quota_result:
+                # Update quota with remaining values
+                if app_id == 'marketfit':
+                    quota['document_pages'] = quota_result['document_pages_quota']
+                    quota['perplexity_requests'] = quota_result['perplexity_requests_quota']
+                else:  # saleswit
+                    quota['requests'] = quota_result['requests_quota']
+            
+            cursor.close()
+            conn.close()
+            
+            return quota
+            
+        except Exception as e:
+            logger.error(f"Error getting resource quota: {str(e)}")
+            logger.error(traceback.format_exc())
+            # Return empty quota on error
+            if app_id == 'marketfit':
+                return {
+                    'document_pages': 0,
+                    'perplexity_requests': 0
+                }
+            else:  # saleswit
+                return {
+                    'requests': 0
+                }
+
+    def check_resource_availability(self, user_id, app_id, resource_type, count=1):
+        """
+        Check if user has enough resources available
+        
+        Args:
+            user_id: The user's ID
+            app_id: The application ID
+            resource_type: The type of resource (document_pages, perplexity_requests for marketfit, requests for saleswit)
+            count: Amount to check for
+            
+        Returns:
+            bool: True if resource is available, False otherwise
+        """
+        logger.info(f"Checking {resource_type} availability for user {user_id}, app {app_id}, count {count}")
+        
+        try:
+            # Get the user's resource quota
+            quota = self.get_resource_quota(user_id, app_id)
+            
+            logger.info(f"Checking {quota} availability")
+            # Check if the quota is enough for the requested count
+            if resource_type in quota:
+                return quota[resource_type] >= count
+            
+            # If resource type not found in quota, assume unavailable
+            return False
+                
+        except Exception as e:
+            logger.error(f"Error checking resource availability: {str(e)}")
+            logger.error(traceback.format_exc())
+            # Default to not available on error
+            return False
+
+    def decrement_resource_quota(self, user_id, app_id, resource_type, count=1):
+        """
+        Decrement resource quota for a user
+        
+        Args:
+            user_id: The user's ID
+            app_id: The application ID
+            resource_type: The type of resource (document_pages, perplexity_requests for marketfit, requests for saleswit)
+            count: Amount to decrement by
+            
+        Returns:
+            bool: Success status
+        """
+        logger.info(f"Decrementing {resource_type} quota for user {user_id}, app {app_id} by {count}")
+        
+        try:
+            # Check if resource is available
+            if not self.check_resource_availability(user_id, app_id, resource_type, count):
+                logger.warning(f"Resource {resource_type} not available for user {user_id}")
+                return False
+            
+            conn = self.db.get_connection()
+            cursor = conn.cursor(dictionary=True)
+            
+            # Get the user's active subscription
+            cursor.execute(f"""
+                SELECT id FROM {DB_TABLE_USER_SUBSCRIPTIONS}
+                WHERE user_id = %s AND app_id = %s AND status = 'active'
+                ORDER BY current_period_end DESC LIMIT 1
+            """, (user_id, app_id))
+            
+            subscription = cursor.fetchone()
+            
+            if not subscription:
+                # No active subscription found
+                cursor.close()
+                conn.close()
+                return False
+            
+            # Check if there's an existing quota record for this billing period
+            cursor.execute(f"""
+                SELECT id FROM {DB_TABLE_RESOURCE_USAGE}
+                WHERE user_id = %s AND subscription_id = %s AND app_id = %s
+                AND NOW() BETWEEN billing_period_start AND billing_period_end
+            """, (user_id, subscription['id'], app_id))
+            
+            quota_record = cursor.fetchone()
+            
+            if not quota_record:
+                # No quota record found, initialize it first
+                cursor.close()
+                conn.close()
+                self.initialize_resource_quota(user_id, subscription['id'], app_id)
+                
+                # Try again with initialized quota
+                return self.decrement_resource_quota(user_id, app_id, resource_type, count)
+            
+            # Update the quota by decrementing the specified resource
+            column_name = f"{resource_type}_quota"
+            cursor.execute(f"""
+                UPDATE {DB_TABLE_RESOURCE_USAGE}
+                SET {column_name} = GREATEST(0, {column_name} - %s),
+                    updated_at = NOW()
+                WHERE id = %s
+            """, (count, quota_record['id']))
+            
+            conn.commit()
+            cursor.close()
+            conn.close()
+            
+            return True
+        
+        except Exception as e:
+            logger.error(f"Error decrementing resource quota: {str(e)}")
+            logger.error(traceback.format_exc())
+            return False
+        
+    # service.py - Add method to reset quota on subscription renewal
+    def reset_quota_on_renewal(self, subscription_id):
+        """
+        Reset resource quota when a subscription is renewed
+        
+        Args:
+            subscription_id: The subscription ID
+            
+        Returns:
+            bool: Success status
+        """
+        logger.info(f"Resetting quota for subscription {subscription_id}")
+        
+        try:
+            conn = self.db.get_connection()
+            cursor = conn.cursor(dictionary=True)
+            
+            # Get subscription details
+            cursor.execute(f"""
+                SELECT us.*, sp.features, sp.app_id 
+                FROM {DB_TABLE_USER_SUBSCRIPTIONS} us
+                JOIN {DB_TABLE_SUBSCRIPTION_PLANS} sp ON us.plan_id = sp.id
+                WHERE us.id = %s
+            """, (subscription_id,))
+            
+            subscription = cursor.fetchone()
+            
+            if not subscription:
+                logger.error(f"Subscription {subscription_id} not found")
+                cursor.close()
+                conn.close()
+                return False
+            
+            # Parse features
+            features = parse_json_field(subscription.get('features', '{}'))
+            app_id = subscription.get('app_id')
+            user_id = subscription.get('user_id')
+            
+            # Set the quota based on app
+            if app_id == 'marketfit':
+                document_pages_quota = features.get('document_pages', 50)
+                perplexity_requests_quota = features.get('perplexity_requests', 20)
+                requests_quota = 0  # Not used for MarketFit
+            else:  # saleswit
+                document_pages_quota = 0  # Not used for SalesWit
+                perplexity_requests_quota = 0  # Not used for SalesWit
+                requests_quota = features.get('requests', 20)
+            
+            # Insert or update quota record for the new billing period
+            cursor.execute(f"""
+                INSERT INTO {DB_TABLE_RESOURCE_USAGE}
+                (user_id, subscription_id, app_id, billing_period_start, billing_period_end,
+                document_pages_quota, perplexity_requests_quota, requests_quota)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+                ON DUPLICATE KEY UPDATE
+                document_pages_quota = %s,
+                perplexity_requests_quota = %s,
+                requests_quota = %s
+            """, (
+                user_id,
+                subscription_id,
+                app_id,
+                subscription['current_period_start'],
+                subscription['current_period_end'],
+                document_pages_quota,
+                perplexity_requests_quota,
+                requests_quota,
+                document_pages_quota,
+                perplexity_requests_quota,
+                requests_quota
+            ))
+            
+            conn.commit()
+            cursor.close()
+            conn.close()
+            
+            return True
+            
+        except Exception as e:
+            logger.error(f"Error resetting quota on renewal: {str(e)}")
+            logger.error(traceback.format_exc())
+            return False
+        
+
+
+# service.py - Add method to get subscription by gateway ID
+
+    def get_subscription_by_gateway_id(self, gateway_sub_id, provider):
+        """
+        Get a subscription by its payment gateway subscription ID
+        
+        Args:
+            gateway_sub_id: The gateway subscription ID
+            provider: The payment gateway provider ('razorpay' or 'paypal')
+            
+        Returns:
+            dict: Subscription details or None if not found
+        """
+        logger.info(f"Getting subscription by {provider} ID: {gateway_sub_id}")
+        
+        try:
+            conn = self.db.get_connection()
+            cursor = conn.cursor(dictionary=True)
+            
+            # Different column name based on provider
+            if provider == 'razorpay':
+                id_column = 'razorpay_subscription_id'
+            elif provider == 'paypal':
+                id_column = 'paypal_subscription_id'
+            else:
+                logger.error(f"Unknown payment provider: {provider}")
+                cursor.close()
+                conn.close()
+                return None
+            
+            # Get the subscription with the gateway ID
+            cursor.execute(f"""
+                SELECT us.*, sp.name as plan_name, sp.features, sp.amount, sp.currency, sp.interval 
+                FROM {DB_TABLE_USER_SUBSCRIPTIONS} us
+                JOIN {DB_TABLE_SUBSCRIPTION_PLANS} sp ON us.plan_id = sp.id
+                WHERE us.{id_column} = %s
+                ORDER BY us.updated_at DESC LIMIT 1
+            """, (gateway_sub_id,))
+            
+            subscription = cursor.fetchone()
+            
+            cursor.close()
+            conn.close()
+            
+            # Parse JSON fields
+            if subscription:
+                if subscription.get('features'):
+                    subscription['features'] = parse_json_field(subscription['features'])
+                
+                if subscription.get('metadata'):
+                    subscription['metadata'] = parse_json_field(subscription['metadata'])
+            
+            return subscription
+            
+        except Exception as e:
+            logger.error(f"Error getting subscription by gateway ID: {str(e)}")
+            logger.error(traceback.format_exc())
+            return None
+        
+
+
+payment_service = PaymentService()

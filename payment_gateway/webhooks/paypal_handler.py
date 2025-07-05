@@ -23,6 +23,55 @@ def verify_paypal_webhook_signature(headers, payload):
     logger.info("PayPal webhook signature verification placeholder")
     return True
 
+# def handle_paypal_webhook(payment_service):
+#     """
+#     Handle PayPal webhook events
+    
+#     Args:
+#         payment_service: The PaymentService instance
+        
+#     Returns:
+#         tuple: Response object and status code
+#     """
+#     try:
+#         # Log the webhook received
+#         logger.info("Received PayPal webhook")
+        
+#         # Get the webhook payload
+#         webhook_data = request.json
+        
+#         # Verify the webhook signature
+#         if not verify_paypal_webhook_signature(request.headers, webhook_data):
+#             logger.warning("Invalid PayPal webhook signature")
+#             return {'error': 'Invalid signature'}, 400
+        
+#         # Get the event type
+#         event_type = webhook_data.get('event_type')
+        
+#         if not event_type:
+#             logger.error("No event type in PayPal webhook")
+#             return {'error': 'Invalid webhook payload'}, 400
+        
+#         logger.info(f"Processing PayPal webhook: {event_type}")
+        
+#         # Process the webhook event
+#         result = payment_service.handle_webhook(webhook_data, provider='paypal')
+        
+#         return {
+#             'status': 'success',
+#             'message': f'Processed {event_type} event',
+#             'result': result
+#         }, 200
+#     except Exception as e:
+#         logger.error(f"Error handling PayPal webhook: {str(e)}")
+#         logger.error(f"Request data: {request.data}")
+#         return {'error': str(e)}, 500
+
+
+
+
+# paypal_handler.py - Update webhook handler to reset quota on renewal
+
 def handle_paypal_webhook(payment_service):
     """
     Handle PayPal webhook events
@@ -34,35 +83,37 @@ def handle_paypal_webhook(payment_service):
         tuple: Response object and status code
     """
     try:
-        # Log the webhook received
-        logger.info("Received PayPal webhook")
-        
-        # Get the webhook payload
+        # Parse the webhook payload
         webhook_data = request.json
         
-        # Verify the webhook signature
-        if not verify_paypal_webhook_signature(request.headers, webhook_data):
-            logger.warning("Invalid PayPal webhook signature")
-            return {'error': 'Invalid signature'}, 400
-        
-        # Get the event type
+        # Log the webhook event
         event_type = webhook_data.get('event_type')
-        
-        if not event_type:
-            logger.error("No event type in PayPal webhook")
-            return {'error': 'Invalid webhook payload'}, 400
-        
         logger.info(f"Processing PayPal webhook: {event_type}")
+        
+        # Enhanced debugging for subscription events
+        if event_type and event_type.startswith('BILLING.SUBSCRIPTION.'):
+            resource = webhook_data.get('resource', {})
+            subscription_id = resource.get('id')
+            
+            logger.info(f"Subscription event: {event_type}, ID: {subscription_id}")
+            
+            # Reset quota on subscription payment success
+            if event_type == 'BILLING.SUBSCRIPTION.PAYMENT.SUCCEEDED':
+                # Get the internal subscription ID
+                subscription = payment_service.get_subscription_by_gateway_id(subscription_id, 'paypal')
+                
+                if subscription:
+                    logger.info(f"Resetting quota for subscription {subscription.get('id')} after renewal")
+                    payment_service.reset_quota_on_renewal(subscription.get('id'))
         
         # Process the webhook event
         result = payment_service.handle_webhook(webhook_data, provider='paypal')
         
         return {
-            'status': 'success',
+            'status': 'success', 
             'message': f'Processed {event_type} event',
             'result': result
         }, 200
     except Exception as e:
         logger.error(f"Error handling PayPal webhook: {str(e)}")
-        logger.error(f"Request data: {request.data}")
         return {'error': str(e)}, 500
