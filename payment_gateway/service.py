@@ -1657,6 +1657,166 @@ class PaymentService:
             logger.error(traceback.format_exc())
             return None
         
+# service.py - Add ensure_user_has_resource_quota function
 
+    def ensure_user_has_resource_quota(self, user_id, app_id='marketfit'):
+        """
+        Ensure a user has a resource quota entry in the database.
+        If the user has an active subscription but no resource quota, create one.
+        Only creates it once for free plan users.
+        
+        Args:
+            user_id: The user's ID
+            app_id: The application ID
+            
+        Returns:
+            bool: True if successful, False otherwise
+        """
+        logger.info(f"Ensuring user {user_id} has resource quota for app {app_id}")
+        
+        try:
+            conn = self.db.get_connection()
+            cursor = conn.cursor(dictionary=True)
+            
+            # Check if the user already has a resource quota entry
+            cursor.execute(f"""
+                SELECT ru.id, ru.subscription_id 
+                FROM {DB_TABLE_RESOURCE_USAGE} ru
+                JOIN {DB_TABLE_USER_SUBSCRIPTIONS} us ON ru.subscription_id = us.id
+                WHERE ru.user_id = %s AND ru.app_id = %s
+            """, (user_id, app_id))
+            
+            quota_entry = cursor.fetchone()
+            
+            # If user already has a quota entry, no need to create a new one
+            if quota_entry:
+                logger.info(f"User {user_id} already has resource quota entry: {quota_entry['id']}")
+                cursor.close()
+                conn.close()
+                return True
+            
+            # User doesn't have a quota entry, check if they have an active subscription
+            cursor.execute(f"""
+                SELECT id, plan_id, status, current_period_start, current_period_end 
+                FROM {DB_TABLE_USER_SUBSCRIPTIONS}
+                WHERE user_id = %s AND app_id = %s AND status = 'active'
+                ORDER BY created_at DESC LIMIT 1
+            """, (user_id, app_id))
+            
+            subscription = cursor.fetchone()
+            
+            # If no active subscription found, check if there's a free plan to assign
+            if not subscription:
+                # Check if there's a free plan for the app
+                cursor.execute(f"""
+                    SELECT id FROM {DB_TABLE_SUBSCRIPTION_PLANS}
+                    WHERE app_id = %s AND amount = 0 AND is_active = TRUE
+                    LIMIT 1
+                """, (app_id,))
+                
+                free_plan = cursor.fetchone()
+                
+                if not free_plan:
+                    logger.warning(f"No free plan found for app {app_id}")
+                    cursor.close()
+                    conn.close()
+                    return False
+                
+                # Create a new subscription for the free plan
+                free_plan_id = free_plan['id']
+                subscription_id = generate_id('sub_')
+                current_period_start = datetime.now()
+                current_period_end = current_period_start + timedelta(days=30)  # 30 days for free plan
+                
+                cursor.execute(f"""
+                    INSERT INTO {DB_TABLE_USER_SUBSCRIPTIONS}
+                    (id, user_id, plan_id, status, app_id, current_period_start, current_period_end)
+                    VALUES (%s, %s, %s, 'active', %s, %s, %s)
+                """, (
+                    subscription_id, 
+                    user_id, 
+                    free_plan_id, 
+                    app_id,
+                    current_period_start,
+                    current_period_end
+                ))
+                
+                conn.commit()
+                
+                # Now we have a subscription ID for the free plan
+                subscription = {
+                    'id': subscription_id,
+                    'plan_id': free_plan_id,
+                    'current_period_start': current_period_start,
+                    'current_period_end': current_period_end
+                }
+            
+            # Initialize resource quota for the subscription
+            subscription_id = subscription['id']
+            
+            # Get the plan features
+            cursor.execute(f"""
+                SELECT features FROM {DB_TABLE_SUBSCRIPTION_PLANS}
+                WHERE id = %s
+            """, (subscription['plan_id'],))
+            
+            plan = cursor.fetchone()
+            
+            if not plan:
+                logger.error(f"Plan {subscription['plan_id']} not found")
+                cursor.close()
+                conn.close()
+                return False
+            
+            # Parse features
+            features_str = plan['features']
+            if isinstance(features_str, str):
+                try:
+                    features = json.loads(features_str)
+                except json.JSONDecodeError:
+                    features = {}
+            else:
+                features = features_str or {}
+            
+            # Set quota based on app
+            if app_id == 'marketfit':
+                document_pages_quota = features.get('document_pages', 50)
+                perplexity_requests_quota = features.get('perplexity_requests', 20)
+                requests_quota = 0  # Not used for MarketFit
+            else:  # saleswit
+                document_pages_quota = 0  # Not used for SalesWit
+                perplexity_requests_quota = 0  # Not used for SalesWit
+                requests_quota = features.get('requests', 20)
+            
+            # Create the resource quota entry
+            cursor.execute(f"""
+                INSERT INTO {DB_TABLE_RESOURCE_USAGE}
+                (user_id, subscription_id, app_id, billing_period_start, billing_period_end,
+                document_pages_quota, perplexity_requests_quota, requests_quota)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+            """, (
+                user_id,
+                subscription_id,
+                app_id,
+                subscription['current_period_start'],
+                subscription['current_period_end'],
+                document_pages_quota,
+                perplexity_requests_quota,
+                requests_quota
+            ))
+            
+            conn.commit()
+            
+            logger.info(f"Created resource quota entry for user {user_id}, subscription {subscription_id}")
+            
+            cursor.close()
+            conn.close()
+            
+            return True
+            
+        except Exception as e:
+            logger.error(f"Error ensuring user has resource quota: {str(e)}")
+            logger.error(traceback.format_exc())
+            return False
 
 payment_service = PaymentService()
