@@ -1180,136 +1180,6 @@ class PaymentService:
 
     # service.py - Updated initialize_resource_quota function
 
-    # def initialize_resource_quota(self, user_id, subscription_id, app_id):
-    #     """
-    #     Initialize or reset resource quota for a subscription period
-        
-    #     Args:
-    #         user_id: The user's ID
-    #         subscription_id: The subscription ID
-    #         app_id: The application ID
-            
-    #     Returns:
-    #         bool: Success status
-    #     """
-    #     logger.info(f"Initializing resource quota for user {user_id}, subscription {subscription_id}")
-        
-    #     try:
-    #         conn = self.db.get_connection()
-    #         cursor = conn.cursor(dictionary=True)
-            
-    #         # Get subscription details to get billing period dates and plan features
-    #         cursor.execute(f"""
-    #             SELECT us.*, sp.features, sp.app_id 
-    #             FROM {DB_TABLE_USER_SUBSCRIPTIONS} us
-    #             JOIN {DB_TABLE_SUBSCRIPTION_PLANS} sp ON us.plan_id = sp.id
-    #             WHERE us.id = %s
-    #         """, (subscription_id,))
-            
-    #         subscription = cursor.fetchone()
-            
-    #         if not subscription:
-    #             logger.error(f"Subscription {subscription_id} not found")
-    #             cursor.close()
-    #             conn.close()
-    #             return False
-            
-    #         # Parse features
-    #         features_str = subscription.get('features', '{}')
-    #         if isinstance(features_str, str):
-    #             try:
-    #                 features = json.loads(features_str)
-    #             except json.JSONDecodeError:
-    #                 features = {}
-    #         else:
-    #             features = features_str or {}
-            
-    #         # Set the quota based on app
-    #         if app_id == 'marketfit':
-    #             document_pages_quota = features.get('document_pages', 50)
-    #             perplexity_requests_quota = features.get('perplexity_requests', 20)
-    #             requests_quota = 0  # Not used for MarketFit
-    #         else:  # saleswit
-    #             document_pages_quota = 0  # Not used for SalesWit
-    #             perplexity_requests_quota = 0  # Not used for SalesWit
-    #             requests_quota = features.get('requests', 20)
-            
-    #         # Log quota values for debugging
-    #         logger.info(f"Setting quota for {app_id}: doc_pages={document_pages_quota}, perplexity={perplexity_requests_quota}, requests={requests_quota}")
-            
-    #         # Make sure billing period dates are available
-    #         if not subscription.get('current_period_start') or not subscription.get('current_period_end'):
-    #             # Set default billing period if not available
-    #             current_period_start = datetime.now()
-    #             current_period_end = current_period_start + timedelta(days=30)  # Default to 30 days
-                
-    #             # Update subscription with billing period
-    #             cursor.execute(f"""
-    #                 UPDATE {DB_TABLE_USER_SUBSCRIPTIONS}
-    #                 SET current_period_start = %s, current_period_end = %s
-    #                 WHERE id = %s
-    #             """, (current_period_start, current_period_end, subscription_id))
-                
-    #             conn.commit()
-    #         else:
-    #             current_period_start = subscription['current_period_start']
-    #             current_period_end = subscription['current_period_end']
-            
-    #         # Check if there's an existing quota record for this billing period
-    #         cursor.execute(f"""
-    #             SELECT id FROM {DB_TABLE_RESOURCE_USAGE}
-    #             WHERE user_id = %s AND subscription_id = %s AND app_id = %s
-    #             AND NOW() BETWEEN billing_period_start AND billing_period_end
-    #         """, (user_id, subscription_id, app_id))
-            
-    #         quota_record = cursor.fetchone()
-            
-    #         if quota_record:
-    #             # Update existing record - reset quotas
-    #             cursor.execute(f"""
-    #                 UPDATE {DB_TABLE_RESOURCE_USAGE}
-    #                 SET document_pages_quota = %s,
-    #                     perplexity_requests_quota = %s,
-    #                     requests_quota = %s,
-    #                     updated_at = NOW()
-    #                 WHERE id = %s
-    #             """, (
-    #                 document_pages_quota,
-    #                 perplexity_requests_quota,
-    #                 requests_quota,
-    #                 quota_record['id']
-    #             ))
-    #             logger.info(f"Updated existing quota record {quota_record['id']}")
-    #         else:
-    #             # Create a new record
-    #             cursor.execute(f"""
-    #                 INSERT INTO {DB_TABLE_RESOURCE_USAGE}
-    #                 (user_id, subscription_id, app_id, billing_period_start, billing_period_end,
-    #                 document_pages_quota, perplexity_requests_quota, requests_quota)
-    #                 VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
-    #             """, (
-    #                 user_id,
-    #                 subscription_id,
-    #                 app_id,
-    #                 current_period_start,
-    #                 current_period_end,
-    #                 document_pages_quota,
-    #                 perplexity_requests_quota,
-    #                 requests_quota
-    #             ))
-    #             logger.info(f"Created new quota record for subscription {subscription_id}")
-            
-    #         conn.commit()
-    #         cursor.close()
-    #         conn.close()
-            
-    #         return True
-            
-    #     except Exception as e:
-    #         logger.error(f"Error initializing resource quota: {str(e)}")
-    #         logger.error(traceback.format_exc())
-    #         return False
-
     def initialize_resource_quota(self, user_id, subscription_id, app_id):
         """
         Initialize or reset resource quota for a subscription period
@@ -1367,11 +1237,29 @@ class PaymentService:
             # Log quota values for debugging
             logger.info(f"Setting quota for {app_id}: doc_pages={document_pages_quota}, perplexity={perplexity_requests_quota}, requests={requests_quota}")
             
-            # Check if there's an existing quota record for this subscription
+            # Make sure billing period dates are available
+            if not subscription.get('current_period_start') or not subscription.get('current_period_end'):
+                # Set default billing period if not available
+                current_period_start = datetime.now()
+                current_period_end = current_period_start + timedelta(days=30)  # Default to 30 days
+                
+                # Update subscription with billing period
+                cursor.execute(f"""
+                    UPDATE {DB_TABLE_USER_SUBSCRIPTIONS}
+                    SET current_period_start = %s, current_period_end = %s
+                    WHERE id = %s
+                """, (current_period_start, current_period_end, subscription_id))
+                
+                conn.commit()
+            else:
+                current_period_start = subscription['current_period_start']
+                current_period_end = subscription['current_period_end']
+            
+            # Check if there's an existing quota record for this billing period
             cursor.execute(f"""
                 SELECT id FROM {DB_TABLE_RESOURCE_USAGE}
                 WHERE user_id = %s AND subscription_id = %s AND app_id = %s
-                ORDER BY created_at DESC LIMIT 1
+                AND NOW() BETWEEN billing_period_start AND billing_period_end
             """, (user_id, subscription_id, app_id))
             
             quota_record = cursor.fetchone()
@@ -1403,8 +1291,8 @@ class PaymentService:
                     user_id,
                     subscription_id,
                     app_id,
-                    subscription.get('current_period_start') or datetime.now(),
-                    subscription.get('current_period_end') or (datetime.now() + timedelta(days=30)),
+                    current_period_start,
+                    current_period_end,
                     document_pages_quota,
                     perplexity_requests_quota,
                     requests_quota
@@ -1421,6 +1309,118 @@ class PaymentService:
             logger.error(f"Error initializing resource quota: {str(e)}")
             logger.error(traceback.format_exc())
             return False
+
+    # def initialize_resource_quota(self, user_id, subscription_id, app_id):
+    #     """
+    #     Initialize or reset resource quota for a subscription period
+        
+    #     Args:
+    #         user_id: The user's ID
+    #         subscription_id: The subscription ID
+    #         app_id: The application ID
+            
+    #     Returns:
+    #         bool: Success status
+    #     """
+    #     logger.info(f"Initializing resource quota for user {user_id}, subscription {subscription_id}")
+        
+    #     try:
+    #         conn = self.db.get_connection()
+    #         cursor = conn.cursor(dictionary=True)
+            
+    #         # Get subscription details to get billing period dates and plan features
+    #         cursor.execute(f"""
+    #             SELECT us.*, sp.features, sp.app_id 
+    #             FROM {DB_TABLE_USER_SUBSCRIPTIONS} us
+    #             JOIN {DB_TABLE_SUBSCRIPTION_PLANS} sp ON us.plan_id = sp.id
+    #             WHERE us.id = %s
+    #         """, (subscription_id,))
+            
+    #         subscription = cursor.fetchone()
+            
+    #         if not subscription:
+    #             logger.error(f"Subscription {subscription_id} not found")
+    #             cursor.close()
+    #             conn.close()
+    #             return False
+            
+    #         # Parse features
+    #         features_str = subscription.get('features', '{}')
+    #         if isinstance(features_str, str):
+    #             try:
+    #                 features = json.loads(features_str)
+    #             except json.JSONDecodeError:
+    #                 features = {}
+    #         else:
+    #             features = features_str or {}
+            
+    #         # Set the quota based on app
+    #         if app_id == 'marketfit':
+    #             document_pages_quota = features.get('document_pages', 50)
+    #             perplexity_requests_quota = features.get('perplexity_requests', 20)
+    #             requests_quota = 0  # Not used for MarketFit
+    #         else:  # saleswit
+    #             document_pages_quota = 0  # Not used for SalesWit
+    #             perplexity_requests_quota = 0  # Not used for SalesWit
+    #             requests_quota = features.get('requests', 20)
+            
+    #         # Log quota values for debugging
+    #         logger.info(f"Setting quota for {app_id}: doc_pages={document_pages_quota}, perplexity={perplexity_requests_quota}, requests={requests_quota}")
+            
+    #         # Check if there's an existing quota record for this subscription
+    #         cursor.execute(f"""
+    #             SELECT id FROM {DB_TABLE_RESOURCE_USAGE}
+    #             WHERE user_id = %s AND subscription_id = %s AND app_id = %s
+    #             ORDER BY created_at DESC LIMIT 1
+    #         """, (user_id, subscription_id, app_id))
+            
+    #         quota_record = cursor.fetchone()
+            
+    #         if quota_record:
+    #             # Update existing record - reset quotas
+    #             cursor.execute(f"""
+    #                 UPDATE {DB_TABLE_RESOURCE_USAGE}
+    #                 SET document_pages_quota = %s,
+    #                     perplexity_requests_quota = %s,
+    #                     requests_quota = %s,
+    #                     updated_at = NOW()
+    #                 WHERE id = %s
+    #             """, (
+    #                 document_pages_quota,
+    #                 perplexity_requests_quota,
+    #                 requests_quota,
+    #                 quota_record['id']
+    #             ))
+    #             logger.info(f"Updated existing quota record {quota_record['id']}")
+    #         else:
+    #             # Create a new record
+    #             cursor.execute(f"""
+    #                 INSERT INTO {DB_TABLE_RESOURCE_USAGE}
+    #                 (user_id, subscription_id, app_id, billing_period_start, billing_period_end,
+    #                 document_pages_quota, perplexity_requests_quota, requests_quota)
+    #                 VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+    #             """, (
+    #                 user_id,
+    #                 subscription_id,
+    #                 app_id,
+    #                 subscription.get('current_period_start') or datetime.now(),
+    #                 subscription.get('current_period_end') or (datetime.now() + timedelta(days=30)),
+    #                 document_pages_quota,
+    #                 perplexity_requests_quota,
+    #                 requests_quota
+    #             ))
+    #             logger.info(f"Created new quota record for subscription {subscription_id}")
+            
+    #         conn.commit()
+    #         cursor.close()
+    #         conn.close()
+            
+    #         return True
+            
+    #     except Exception as e:
+    #         logger.error(f"Error initializing resource quota: {str(e)}")
+    #         logger.error(traceback.format_exc())
+    #         return False
 
     # def get_resource_quota(self, user_id, app_id):
     #     """
