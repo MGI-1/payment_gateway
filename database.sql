@@ -127,3 +127,14 @@ CREATE TABLE `resource_usage` (
   KEY `billing_period_start` (`billing_period_start`,`billing_period_end`),
   CONSTRAINT `resource_usage_ibfk_1` FOREIGN KEY (`subscription_id`) REFERENCES `user_subscriptions` (`id`)
 );
+
+CREATE TABLE `subscription_events_log` (
+  `id` int NOT NULL AUTO_INCREMENT,
+  `event_type` varchar(100) NOT NULL,
+  `razorpay_entity_id` varchar(255) DEFAULT NULL,
+  `user_id` varchar(255) DEFAULT NULL,
+  `data` json DEFAULT NULL,
+  `processed` tinyint(1) DEFAULT '0',
+  `created_at` datetime DEFAULT CURRENT_TIMESTAMP,
+  PRIMARY KEY (`id`)
+);
