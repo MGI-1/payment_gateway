@@ -1422,100 +1422,6 @@ class PaymentService:
     #         logger.error(traceback.format_exc())
     #         return False
 
-    # def get_resource_quota(self, user_id, app_id):
-    #     """
-    #     Get remaining resource quota for a user in the current billing period
-        
-    #     Args:
-    #         user_id: The user's ID
-    #         app_id: The application ID
-            
-    #     Returns:
-    #         dict: Resource quota
-    #     """
-    #     logger.info(f"hello om")
-    #     logger.info(f"Getting resource quota for user {user_id}, app {app_id}")
-        
-    #     try:
-    #         conn = self.db.get_connection()
-    #         cursor = conn.cursor(dictionary=True)
-            
-    #         # Initialize quota object based on app
-    #         if app_id == 'marketfit':
-    #             quota = {
-    #                 'document_pages': 0,
-    #                 'perplexity_requests': 0
-    #             }
-    #         else:  # saleswit
-    #             quota = {
-    #                 'requests': 0
-    #             }
-            
-    #         # Get the user's active subscription
-    #         cursor.execute(f"""
-    #             SELECT id FROM {DB_TABLE_USER_SUBSCRIPTIONS}
-    #             WHERE user_id = %s AND app_id = %s AND status = 'active'
-    #             ORDER BY current_period_end DESC LIMIT 1
-    #         """, (user_id, app_id))
-            
-    #         subscription_result = cursor.fetchone()
-            
-    #         if not subscription_result:
-    #             cursor.close()
-    #             conn.close()
-    #             return quota
-            
-    #         subscription_id = subscription_result['id']
-            
-    #         # Get quota from the tracking table for the current billing period
-    #         if app_id == 'marketfit':
-    #             cursor.execute(f"""
-    #                 SELECT document_pages_quota, perplexity_requests_quota
-    #                 FROM {DB_TABLE_RESOURCE_USAGE}
-    #                 WHERE user_id = %s AND subscription_id = %s AND app_id = %s
-                    
-    #             """, (user_id, subscription_id, app_id))
-    #         else:  # saleswit
-    #             cursor.execute(f"""
-    #                 SELECT requests_quota
-    #                 FROM {DB_TABLE_RESOURCE_USAGE}
-    #                 WHERE user_id = %s AND subscription_id = %s AND app_id = %s
-    #                 AND NOW() BETWEEN billing_period_start AND billing_period_end
-    #                 ORDER BY billing_period_start DESC LIMIT 1
-    #             """, (user_id, subscription_id, app_id))
-            
-    #         quota_result = cursor.fetchone()
-            
-    #         logger.info(f"hello {quota_result}, {user_id}, {subscription_id}, {app_id} availability")
-
-    #         if quota_result:
-    #             # Update quota with remaining values
-    #             if app_id == 'marketfit':
-    #                 quota['document_pages'] = quota_result['document_pages_quota']
-    #                 quota['perplexity_requests'] = quota_result['perplexity_requests_quota']
-    #             else:  # saleswit
-    #                 quota['requests'] = quota_result['requests_quota']
-            
-    #         cursor.close()
-    #         conn.close()
-            
-    #         return quota
-            
-    #     except Exception as e:
-    #         logger.error(f"Error getting resource quota: {str(e)}")
-    #         logger.error(traceback.format_exc())
-    #         # Return empty quota on error
-    #         if app_id == 'marketfit':
-    #             return {
-    #                 'document_pages': 0,
-    #                 'perplexity_requests': 0
-    #             }
-    #         else:  # saleswit
-    #             return {
-    #                 'requests': 0
-    #             }
-
-    # service.py - Updated get_resource_quota function
     def get_resource_quota(self, user_id, app_id):
         """
         Get remaining resource quota for a user in the current billing period
@@ -1527,6 +1433,7 @@ class PaymentService:
         Returns:
             dict: Resource quota
         """
+        logger.info(f"hello om")
         logger.info(f"Getting resource quota for user {user_id}, app {app_id}")
         
         try:
@@ -1561,16 +1468,28 @@ class PaymentService:
             subscription_id = subscription_result['id']
             
             # Get quota from the tracking table for the current billing period
-            cursor.execute(f"""
-                SELECT * FROM {DB_TABLE_RESOURCE_USAGE}
-                WHERE user_id = %s AND subscription_id = %s AND app_id = %s
-                ORDER BY created_at DESC LIMIT 1
-            """, (user_id, subscription_id, app_id))
+            if app_id == 'marketfit':
+                cursor.execute(f"""
+                    SELECT document_pages_quota, perplexity_requests_quota
+                    FROM {DB_TABLE_RESOURCE_USAGE}
+                    WHERE user_id = %s AND subscription_id = %s AND app_id = %s
+                    
+                """, (user_id, subscription_id, app_id))
+            else:  # saleswit
+                cursor.execute(f"""
+                    SELECT requests_quota
+                    FROM {DB_TABLE_RESOURCE_USAGE}
+                    WHERE user_id = %s AND subscription_id = %s AND app_id = %s
+                    AND NOW() BETWEEN billing_period_start AND billing_period_end
+                    ORDER BY billing_period_start DESC LIMIT 1
+                """, (user_id, subscription_id, app_id))
             
             quota_result = cursor.fetchone()
             
+            logger.info(f"hello {quota_result}, {user_id}, {subscription_id}, {app_id} availability")
+
             if quota_result:
-                # Update quota with remaining values based on app
+                # Update quota with remaining values
                 if app_id == 'marketfit':
                     quota['document_pages'] = quota_result['document_pages_quota']
                     quota['perplexity_requests'] = quota_result['perplexity_requests_quota']
@@ -1580,7 +1499,6 @@ class PaymentService:
             cursor.close()
             conn.close()
             
-            logger.info(f"Resource quota for user {user_id}: {quota}")
             return quota
             
         except Exception as e:
@@ -1597,38 +1515,87 @@ class PaymentService:
                     'requests': 0
                 }
 
-    # def check_resource_availability(self, user_id, app_id, resource_type, count=1):
+    # service.py - Updated get_resource_quota function
+    # def get_resource_quota(self, user_id, app_id):
     #     """
-    #     Check if user has enough resources available
+    #     Get remaining resource quota for a user in the current billing period
         
     #     Args:
     #         user_id: The user's ID
     #         app_id: The application ID
-    #         resource_type: The type of resource (document_pages, perplexity_requests for marketfit, requests for saleswit)
-    #         count: Amount to check for
             
     #     Returns:
-    #         bool: True if resource is available, False otherwise
+    #         dict: Resource quota
     #     """
-    #     logger.info(f"Checking {resource_type} availability for user {user_id}, app {app_id}, count {count}")
+    #     logger.info(f"Getting resource quota for user {user_id}, app {app_id}")
         
     #     try:
-    #         # Get the user's resource quota
-    #         quota = self.get_resource_quota(user_id, app_id)
+    #         conn = self.db.get_connection()
+    #         cursor = conn.cursor(dictionary=True)
             
-    #         logger.info(f"Checking {quota} availability")
-    #         # Check if the quota is enough for the requested count
-    #         if resource_type in quota:
-    #             return quota[resource_type] >= count
+    #         # Initialize quota object based on app
+    #         if app_id == 'marketfit':
+    #             quota = {
+    #                 'document_pages': 0,
+    #                 'perplexity_requests': 0
+    #             }
+    #         else:  # saleswit
+    #             quota = {
+    #                 'requests': 0
+    #             }
             
-    #         # If resource type not found in quota, assume unavailable
-    #         return False
-                
+    #         # Get the user's active subscription
+    #         cursor.execute(f"""
+    #             SELECT id FROM {DB_TABLE_USER_SUBSCRIPTIONS}
+    #             WHERE user_id = %s AND app_id = %s AND status = 'active'
+    #             ORDER BY current_period_end DESC LIMIT 1
+    #         """, (user_id, app_id))
+            
+    #         subscription_result = cursor.fetchone()
+            
+    #         if not subscription_result:
+    #             cursor.close()
+    #             conn.close()
+    #             return quota
+            
+    #         subscription_id = subscription_result['id']
+            
+    #         # Get quota from the tracking table for the current billing period
+    #         cursor.execute(f"""
+    #             SELECT * FROM {DB_TABLE_RESOURCE_USAGE}
+    #             WHERE user_id = %s AND subscription_id = %s AND app_id = %s
+    #             ORDER BY created_at DESC LIMIT 1
+    #         """, (user_id, subscription_id, app_id))
+            
+    #         quota_result = cursor.fetchone()
+            
+    #         if quota_result:
+    #             # Update quota with remaining values based on app
+    #             if app_id == 'marketfit':
+    #                 quota['document_pages'] = quota_result['document_pages_quota']
+    #                 quota['perplexity_requests'] = quota_result['perplexity_requests_quota']
+    #             else:  # saleswit
+    #                 quota['requests'] = quota_result['requests_quota']
+            
+    #         cursor.close()
+    #         conn.close()
+            
+    #         logger.info(f"Resource quota for user {user_id}: {quota}")
+    #         return quota
+            
     #     except Exception as e:
-    #         logger.error(f"Error checking resource availability: {str(e)}")
+    #         logger.error(f"Error getting resource quota: {str(e)}")
     #         logger.error(traceback.format_exc())
-    #         # Default to not available on error
-    #         return False
+    #         # Return empty quota on error
+    #         if app_id == 'marketfit':
+    #             return {
+    #                 'document_pages': 0,
+    #                 'perplexity_requests': 0
+    #             }
+    #         else:  # saleswit
+    #             return {
+    #                 'requests': 0
+    #             }
 
     def check_resource_availability(self, user_id, app_id, resource_type, count=1):
         """
@@ -1646,22 +1613,15 @@ class PaymentService:
         logger.info(f"Checking {resource_type} availability for user {user_id}, app {app_id}, count {count}")
         
         try:
-            # Ensure user has a resource quota entry
-            self.ensure_user_has_resource_quota(user_id, app_id)
-            
             # Get the user's resource quota
             quota = self.get_resource_quota(user_id, app_id)
             
-            logger.info(f"Quota for user {user_id}: {quota}, checking if {count} {resource_type} is available")
-            
+            logger.info(f"Checking {quota} availability")
             # Check if the quota is enough for the requested count
             if resource_type in quota:
-                is_available = quota[resource_type] >= count
-                logger.info(f"Resource {resource_type} availability: {is_available}")
-                return is_available
+                return quota[resource_type] >= count
             
             # If resource type not found in quota, assume unavailable
-            logger.warning(f"Resource type {resource_type} not found in quota for user {user_id}")
             return False
                 
         except Exception as e:
@@ -1670,83 +1630,46 @@ class PaymentService:
             # Default to not available on error
             return False
 
-    # def decrement_resource_quota(self, user_id, app_id, resource_type, count=1):
+    # def check_resource_availability(self, user_id, app_id, resource_type, count=1):
     #     """
-    #     Decrement resource quota for a user
+    #     Check if user has enough resources available
         
     #     Args:
     #         user_id: The user's ID
     #         app_id: The application ID
     #         resource_type: The type of resource (document_pages, perplexity_requests for marketfit, requests for saleswit)
-    #         count: Amount to decrement by
+    #         count: Amount to check for
             
     #     Returns:
-    #         bool: Success status
+    #         bool: True if resource is available, False otherwise
     #     """
-    #     logger.info(f"Decrementing {resource_type} quota for user {user_id}, app {app_id} by {count}")
+    #     logger.info(f"Checking {resource_type} availability for user {user_id}, app {app_id}, count {count}")
         
     #     try:
-    #         # Check if resource is available
-    #         if not self.check_resource_availability(user_id, app_id, resource_type, count):
-    #             logger.warning(f"Resource {resource_type} not available for user {user_id}")
-    #             return False
+    #         # Ensure user has a resource quota entry
+    #         self.ensure_user_has_resource_quota(user_id, app_id)
             
-    #         conn = self.db.get_connection()
-    #         cursor = conn.cursor(dictionary=True)
+    #         # Get the user's resource quota
+    #         quota = self.get_resource_quota(user_id, app_id)
             
-    #         # Get the user's active subscription
-    #         cursor.execute(f"""
-    #             SELECT id FROM {DB_TABLE_USER_SUBSCRIPTIONS}
-    #             WHERE user_id = %s AND app_id = %s AND status = 'active'
-    #             ORDER BY current_period_end DESC LIMIT 1
-    #         """, (user_id, app_id))
+    #         logger.info(f"Quota for user {user_id}: {quota}, checking if {count} {resource_type} is available")
             
-    #         subscription = cursor.fetchone()
+    #         # Check if the quota is enough for the requested count
+    #         if resource_type in quota:
+    #             is_available = quota[resource_type] >= count
+    #             logger.info(f"Resource {resource_type} availability: {is_available}")
+    #             return is_available
             
-    #         if not subscription:
-    #             # No active subscription found
-    #             cursor.close()
-    #             conn.close()
-    #             return False
-            
-    #         # Check if there's an existing quota record for this billing period
-    #         cursor.execute(f"""
-    #             SELECT id FROM {DB_TABLE_RESOURCE_USAGE}
-    #             WHERE user_id = %s AND subscription_id = %s AND app_id = %s
-    #             AND NOW() BETWEEN billing_period_start AND billing_period_end
-    #         """, (user_id, subscription['id'], app_id))
-            
-    #         quota_record = cursor.fetchone()
-            
-    #         if not quota_record:
-    #             # No quota record found, initialize it first
-    #             cursor.close()
-    #             conn.close()
-    #             self.initialize_resource_quota(user_id, subscription['id'], app_id)
-                
-    #             # Try again with initialized quota
-    #             return self.decrement_resource_quota(user_id, app_id, resource_type, count)
-            
-    #         # Update the quota by decrementing the specified resource
-    #         column_name = f"{resource_type}_quota"
-    #         cursor.execute(f"""
-    #             UPDATE {DB_TABLE_RESOURCE_USAGE}
-    #             SET {column_name} = GREATEST(0, {column_name} - %s),
-    #                 updated_at = NOW()
-    #             WHERE id = %s
-    #         """, (count, quota_record['id']))
-            
-    #         conn.commit()
-    #         cursor.close()
-    #         conn.close()
-            
-    #         return True
-        
-    #     except Exception as e:
-    #         logger.error(f"Error decrementing resource quota: {str(e)}")
-    #         logger.error(traceback.format_exc())
+    #         # If resource type not found in quota, assume unavailable
+    #         logger.warning(f"Resource type {resource_type} not found in quota for user {user_id}")
     #         return False
-        
+                
+    #     except Exception as e:
+    #         logger.error(f"Error checking resource availability: {str(e)}")
+    #         logger.error(traceback.format_exc())
+    #         # Default to not available on error
+    #         return False
+
     def decrement_resource_quota(self, user_id, app_id, resource_type, count=1):
         """
         Decrement resource quota for a user
@@ -1786,11 +1709,11 @@ class PaymentService:
                 conn.close()
                 return False
             
-            # Get the user's resource quota record
+            # Check if there's an existing quota record for this billing period
             cursor.execute(f"""
                 SELECT id FROM {DB_TABLE_RESOURCE_USAGE}
                 WHERE user_id = %s AND subscription_id = %s AND app_id = %s
-                ORDER BY created_at DESC LIMIT 1
+                AND NOW() BETWEEN billing_period_start AND billing_period_end
             """, (user_id, subscription['id'], app_id))
             
             quota_record = cursor.fetchone()
@@ -1814,19 +1737,96 @@ class PaymentService:
             """, (count, quota_record['id']))
             
             conn.commit()
-            
-            # Log the decrement
-            logger.info(f"Decremented {count} {resource_type} for user {user_id}")
-            
             cursor.close()
             conn.close()
             
             return True
-            
+        
         except Exception as e:
             logger.error(f"Error decrementing resource quota: {str(e)}")
             logger.error(traceback.format_exc())
             return False
+        
+    # def decrement_resource_quota(self, user_id, app_id, resource_type, count=1):
+    #     """
+    #     Decrement resource quota for a user
+        
+    #     Args:
+    #         user_id: The user's ID
+    #         app_id: The application ID
+    #         resource_type: The type of resource (document_pages, perplexity_requests for marketfit, requests for saleswit)
+    #         count: Amount to decrement by
+            
+    #     Returns:
+    #         bool: Success status
+    #     """
+    #     logger.info(f"Decrementing {resource_type} quota for user {user_id}, app {app_id} by {count}")
+        
+    #     try:
+    #         # Check if resource is available
+    #         if not self.check_resource_availability(user_id, app_id, resource_type, count):
+    #             logger.warning(f"Resource {resource_type} not available for user {user_id}")
+    #             return False
+            
+    #         conn = self.db.get_connection()
+    #         cursor = conn.cursor(dictionary=True)
+            
+    #         # Get the user's active subscription
+    #         cursor.execute(f"""
+    #             SELECT id FROM {DB_TABLE_USER_SUBSCRIPTIONS}
+    #             WHERE user_id = %s AND app_id = %s AND status = 'active'
+    #             ORDER BY current_period_end DESC LIMIT 1
+    #         """, (user_id, app_id))
+            
+    #         subscription = cursor.fetchone()
+            
+    #         if not subscription:
+    #             # No active subscription found
+    #             cursor.close()
+    #             conn.close()
+    #             return False
+            
+    #         # Get the user's resource quota record
+    #         cursor.execute(f"""
+    #             SELECT id FROM {DB_TABLE_RESOURCE_USAGE}
+    #             WHERE user_id = %s AND subscription_id = %s AND app_id = %s
+    #             ORDER BY created_at DESC LIMIT 1
+    #         """, (user_id, subscription['id'], app_id))
+            
+    #         quota_record = cursor.fetchone()
+            
+    #         if not quota_record:
+    #             # No quota record found, initialize it first
+    #             cursor.close()
+    #             conn.close()
+    #             self.initialize_resource_quota(user_id, subscription['id'], app_id)
+                
+    #             # Try again with initialized quota
+    #             return self.decrement_resource_quota(user_id, app_id, resource_type, count)
+            
+    #         # Update the quota by decrementing the specified resource
+    #         column_name = f"{resource_type}_quota"
+    #         cursor.execute(f"""
+    #             UPDATE {DB_TABLE_RESOURCE_USAGE}
+    #             SET {column_name} = GREATEST(0, {column_name} - %s),
+    #                 updated_at = NOW()
+    #             WHERE id = %s
+    #         """, (count, quota_record['id']))
+            
+    #         conn.commit()
+            
+    #         # Log the decrement
+    #         logger.info(f"Decremented {count} {resource_type} for user {user_id}")
+            
+    #         cursor.close()
+    #         conn.close()
+            
+    #         return True
+            
+    #     except Exception as e:
+    #         logger.error(f"Error decrementing resource quota: {str(e)}")
+    #         logger.error(traceback.format_exc())
+    #         return False
 
     # service.py - Add method to reset quota on subscription renewal
     def reset_quota_on_renewal(self, subscription_id):
