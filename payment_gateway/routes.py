@@ -283,6 +283,26 @@ def init_payment_routes(app, payment_service):
             logger.error(f"Error recording PayPal subscription: {str(e)}")
             logger.error(traceback.format_exc())
             return jsonify({'error': str(e)}), 500
+        
+    @payment_bp.route('/ensure-resource-quota', methods=['POST'])
+    def ensure_resource_quota():
+        """Ensure user has a resource quota entry"""
+        try:
+            data = request.json
+            user_id = data.get('user_id')
+            app_id = data.get('app_id', 'marketfit')
+            
+            if not user_id:
+                return jsonify({'error': 'User ID is required'}), 400
+                
+            result = payment_service.ensure_user_has_resource_quota(user_id, app_id)
+            
+            return jsonify({'success': result})
+                
+        except Exception as e:
+            logger.error(f"Error ensuring user has resource quota: {str(e)}")
+            logger.error(traceback.format_exc())
+            return jsonify({'error': str(e)}), 500
 
     # Register the blueprint with the app
     app.register_blueprint(payment_bp)
