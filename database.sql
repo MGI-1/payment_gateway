@@ -72,7 +72,7 @@ CREATE TABLE `subscription_invoices` (
   `subscription_id` varchar(64) NOT NULL,
   `user_id` varchar(255) NOT NULL,
   `razorpay_invoice_id` varchar(255) DEFAULT NULL,
-  `amount` int NOT NULL,
+  `amount` decimal(10,2) DEFAULT NULL,
   `currency` varchar(10) DEFAULT 'INR',
   `status` varchar(50) NOT NULL,
   `payment_id` varchar(255) DEFAULT NULL,
@@ -84,25 +84,6 @@ CREATE TABLE `subscription_invoices` (
   KEY `subscription_id` (`subscription_id`),
   KEY `user_id` (`user_id`),
   CONSTRAINT `subscription_invoices_ibfk_1` FOREIGN KEY (`subscription_id`) REFERENCES `user_subscriptions` (`id`)
-);
-
-
-CREATE TABLE `subscription_usage` (
-  `id` int NOT NULL AUTO_INCREMENT,
-  `user_id` varchar(255) NOT NULL,
-  `app_id` varchar(50) NOT NULL DEFAULT 'marketfit',
-  `subscription_id` varchar(64) DEFAULT NULL,
-  `period_start` date NOT NULL,
-  `period_end` date NOT NULL,
-  `requests_used` int DEFAULT '0',
-  `pages_used` int DEFAULT '0',
-  `created_at` datetime DEFAULT CURRENT_TIMESTAMP,
-  `updated_at` datetime DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
-  PRIMARY KEY (`id`),
-  UNIQUE KEY `unique_user_period` (`user_id`,`app_id`,`period_start`,`period_end`),
-  KEY `user_id` (`user_id`),
-  KEY `subscription_id` (`subscription_id`),
-  KEY `period_start` (`period_start`,`period_end`)
 );
 
 
