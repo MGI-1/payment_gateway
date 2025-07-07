@@ -1516,22 +1516,17 @@ class PaymentService:
     #             }
 
     # service.py - Updated get_resource_quota function
+    # service.py - Enhanced logging for get_resource_quota
+
     def get_resource_quota(self, user_id, app_id):
-        """
-        Get remaining resource quota for a user in the current billing period
-        
-        Args:
-            user_id: The user's ID
-            app_id: The application ID
-            
-        Returns:
-            dict: Resource quota
-        """
-        logger.info(f"Getting resource quota for user {user_id}, app {app_id}")
+        """Get remaining resource quota for a user in the current billing period."""
+        logger.info(f"[AZURE DEBUG] Starting get_resource_quota for user {user_id}, app {app_id}")
         
         try:
             conn = self.db.get_connection()
             cursor = conn.cursor(dictionary=True)
+            
+            logger.info(f"[AZURE DEBUG] Database connection established for quota query")
             
             # Initialize quota object based on app
             if app_id == 'marketfit':
@@ -1544,47 +1539,62 @@ class PaymentService:
                     'requests': 0
                 }
             
+            logger.info(f"[AZURE DEBUG] Initial quota object: {quota}")
+            
             # Get the user's active subscription
-            cursor.execute(f"""
+            subscription_query = f"""
                 SELECT id FROM {DB_TABLE_USER_SUBSCRIPTIONS}
                 WHERE user_id = %s AND app_id = %s AND status = 'active'
                 ORDER BY current_period_end DESC LIMIT 1
-            """, (user_id, app_id))
+            """
+            logger.info(f"[AZURE DEBUG] Executing subscription query: {subscription_query}")
             
+            cursor.execute(subscription_query, (user_id, app_id))
             subscription_result = cursor.fetchone()
             
             if not subscription_result:
+                logger.warning(f"[AZURE DEBUG] No active subscription found for user {user_id}")
                 cursor.close()
                 conn.close()
                 return quota
             
             subscription_id = subscription_result['id']
+            logger.info(f"[AZURE DEBUG] Found subscription: {subscription_id}")
             
             # Get quota from the tracking table for the current billing period
-            cursor.execute(f"""
+            quota_query = f"""
                 SELECT * FROM {DB_TABLE_RESOURCE_USAGE}
                 WHERE user_id = %s AND subscription_id = %s AND app_id = %s
                 ORDER BY created_at DESC LIMIT 1
-            """, (user_id, subscription_id, app_id))
+            """
+            logger.info(f"[AZURE DEBUG] Executing quota query: {quota_query}")
             
+            cursor.execute(quota_query, (user_id, subscription_id, app_id))
             quota_result = cursor.fetchone()
             
             if quota_result:
+                logger.info(f"[AZURE DEBUG] Found quota record: {quota_result['id']}")
+                # Log all quota fields for debugging
+                for key, value in quota_result.items():
+                    logger.info(f"[AZURE DEBUG] Quota field {key}: {value}")
+                    
                 # Update quota with remaining values based on app
                 if app_id == 'marketfit':
                     quota['document_pages'] = quota_result['document_pages_quota']
                     quota['perplexity_requests'] = quota_result['perplexity_requests_quota']
                 else:  # saleswit
                     quota['requests'] = quota_result['requests_quota']
+            else:
+                logger.warning(f"[AZURE DEBUG] No quota record found for user {user_id}, subscription {subscription_id}")
             
             cursor.close()
             conn.close()
             
-            logger.info(f"Resource quota for user {user_id}: {quota}")
+            logger.info(f"[AZURE DEBUG] Final quota result: {quota}")
             return quota
             
         except Exception as e:
-            logger.error(f"Error getting resource quota: {str(e)}")
+            logger.error(f"[AZURE DEBUG] Error in get_resource_quota: {str(e)}")
             logger.error(traceback.format_exc())
             # Return empty quota on error
             if app_id == 'marketfit':
@@ -1630,42 +1640,37 @@ class PaymentService:
     # #         # Default to not available on error
     # #         return False
 
+    # service.py - Enhanced logging for check_resource_availability
+
     def check_resource_availability(self, user_id, app_id, resource_type, count=1):
-        """
-        Check if user has enough resources available
-        
-        Args:
-            user_id: The user's ID
-            app_id: The application ID
-            resource_type: The type of resource (document_pages, perplexity_requests for marketfit, requests for saleswit)
-            count: Amount to check for
-            
-        Returns:
-            bool: True if resource is available, False otherwise
-        """
-        logger.info(f"Checking {resource_type} availability for user {user_id}, app {app_id}, count {count}")
+        """Check if user has enough resources available."""
+        logger.info(f"[AZURE DEBUG] Starting check_resource_availability for user {user_id}, app {app_id}, resource_type {resource_type}, count {count}")
         
         try:
             # Ensure user has a resource quota entry
-            self.ensure_user_has_resource_quota(user_id, app_id)
+            logger.info(f"[AZURE DEBUG] Ensuring user {user_id} has resource quota")
+            ensure_result = self.ensure_user_has_resource_quota(user_id, app_id)
+            logger.info(f"[AZURE DEBUG] Ensure result: {ensure_result}")
             
             # Get the user's resource quota
+            logger.info(f"[AZURE DEBUG] Getting resource quota for user {user_id}")
             quota = self.get_resource_quota(user_id, app_id)
             
-            logger.info(f"Quota for user {user_id}: {quota}, checking if {count} {resource_type} is available")
+            logger.info(f"[AZURE DEBUG] Current quota: {quota}")
+            logger.info(f"[AZURE DEBUG] Checking if {count} {resource_type} is available")
             
             # Check if the quota is enough for the requested count
             if resource_type in quota:
                 is_available = quota[resource_type] >= count
-                logger.info(f"Resource {resource_type} availability: {is_available}")
+                logger.info(f"[AZURE DEBUG] Resource {resource_type} availability: {is_available} (need {count}, have {quota[resource_type]})")
                 return is_available
             
             # If resource type not found in quota, assume unavailable
-            logger.warning(f"Resource type {resource_type} not found in quota for user {user_id}")
+            logger.warning(f"[AZURE DEBUG] Resource type {resource_type} not found in quota for user {user_id}")
             return False
                 
         except Exception as e:
-            logger.error(f"Error checking resource availability: {str(e)}")
+            logger.error(f"[AZURE DEBUG] Error in check_resource_availability: {str(e)}")
             logger.error(traceback.format_exc())
             # Default to not available on error
             return False
@@ -1747,76 +1752,90 @@ class PaymentService:
     #         logger.error(traceback.format_exc())
     #         return False
         
+    # service.py - Enhanced logging for decrement_resource_quota
+
     def decrement_resource_quota(self, user_id, app_id, resource_type, count=1):
-        """
-        Decrement resource quota for a user
-        
-        Args:
-            user_id: The user's ID
-            app_id: The application ID
-            resource_type: The type of resource (document_pages, perplexity_requests for marketfit, requests for saleswit)
-            count: Amount to decrement by
-            
-        Returns:
-            bool: Success status
-        """
-        logger.info(f"Decrementing {resource_type} quota for user {user_id}, app {app_id} by {count}")
+        """Decrement resource quota for a user."""
+        logger.info(f"[AZURE DEBUG] Starting decrement_resource_quota for user {user_id}, app {app_id}, resource_type {resource_type}, count {count}")
         
         try:
             # Check if resource is available
+            logger.info(f"[AZURE DEBUG] Checking if resource {resource_type} is available")
             if not self.check_resource_availability(user_id, app_id, resource_type, count):
-                logger.warning(f"Resource {resource_type} not available for user {user_id}")
+                logger.warning(f"[AZURE DEBUG] Resource {resource_type} not available for user {user_id}")
                 return False
+            
+            logger.info(f"[AZURE DEBUG] Resource {resource_type} is available, proceeding with decrement")
             
             conn = self.db.get_connection()
             cursor = conn.cursor(dictionary=True)
             
             # Get the user's active subscription
-            cursor.execute(f"""
+            subscription_query = f"""
                 SELECT id FROM {DB_TABLE_USER_SUBSCRIPTIONS}
                 WHERE user_id = %s AND app_id = %s AND status = 'active'
                 ORDER BY current_period_end DESC LIMIT 1
-            """, (user_id, app_id))
+            """
+            logger.info(f"[AZURE DEBUG] Executing subscription query: {subscription_query}")
             
+            cursor.execute(subscription_query, (user_id, app_id))
             subscription = cursor.fetchone()
             
             if not subscription:
-                # No active subscription found
+                logger.warning(f"[AZURE DEBUG] No active subscription found for user {user_id}")
                 cursor.close()
                 conn.close()
                 return False
             
+            logger.info(f"[AZURE DEBUG] Found subscription: {subscription['id']}")
+            
             # Get the user's resource quota record
-            cursor.execute(f"""
+            quota_query = f"""
                 SELECT id FROM {DB_TABLE_RESOURCE_USAGE}
                 WHERE user_id = %s AND subscription_id = %s AND app_id = %s
                 ORDER BY created_at DESC LIMIT 1
-            """, (user_id, subscription['id'], app_id))
+            """
+            logger.info(f"[AZURE DEBUG] Executing quota query: {quota_query}")
             
+            cursor.execute(quota_query, (user_id, subscription['id'], app_id))
             quota_record = cursor.fetchone()
             
             if not quota_record:
-                # No quota record found, initialize it first
+                logger.warning(f"[AZURE DEBUG] No quota record found for user {user_id}")
                 cursor.close()
                 conn.close()
-                self.initialize_resource_quota(user_id, subscription['id'], app_id)
+                
+                # Initialize quota first
+                logger.info(f"[AZURE DEBUG] Initializing resource quota before decrement")
+                init_result = self.initialize_resource_quota(user_id, subscription['id'], app_id)
+                logger.info(f"[AZURE DEBUG] Initialization result: {init_result}")
                 
                 # Try again with initialized quota
                 return self.decrement_resource_quota(user_id, app_id, resource_type, count)
             
+            logger.info(f"[AZURE DEBUG] Found quota record: {quota_record['id']}")
+            
             # Update the quota by decrementing the specified resource
             column_name = f"{resource_type}_quota"
-            cursor.execute(f"""
+            update_query = f"""
                 UPDATE {DB_TABLE_RESOURCE_USAGE}
                 SET {column_name} = GREATEST(0, {column_name} - %s),
                     updated_at = NOW()
                 WHERE id = %s
-            """, (count, quota_record['id']))
+            """
+            logger.info(f"[AZURE DEBUG] Executing update query: {update_query}")
             
-            conn.commit()
-            
-            # Log the decrement
-            logger.info(f"Decremented {count} {resource_type} for user {user_id}")
+            try:
+                cursor.execute(update_query, (count, quota_record['id']))
+                conn.commit()
+                logger.info(f"[AZURE DEBUG] Successfully decremented {count} {resource_type} for user {user_id}")
+            except Exception as update_err:
+                logger.error(f"[AZURE DEBUG] Error updating quota: {str(update_err)}")
+                logger.error(traceback.format_exc())
+                conn.rollback()
+                cursor.close()
+                conn.close()
+                return False
             
             cursor.close()
             conn.close()
@@ -1824,7 +1843,7 @@ class PaymentService:
             return True
             
         except Exception as e:
-            logger.error(f"Error decrementing resource quota: {str(e)}")
+            logger.error(f"[AZURE DEBUG] Error in decrement_resource_quota: {str(e)}")
             logger.error(traceback.format_exc())
             return False
 
@@ -1973,51 +1992,54 @@ class PaymentService:
             return None
         
 # service.py - Add ensure_user_has_resource_quota function
+    # service.py - Enhanced logging for ensure_user_has_resource_quota
+
     def ensure_user_has_resource_quota(self, user_id, app_id='marketfit'):
-        """
-        Ensure a user has a resource quota entry in the database.
-        If the user has an active subscription but no resource quota, create one.
-        Only creates it once for free plan users.
-        
-        Args:
-            user_id: The user's ID
-            app_id: The application ID
-            
-        Returns:
-            bool: True if successful, False otherwise
-        """
-        logger.info(f"Ensuring user {user_id} has resource quota for app {app_id}")
+        """Ensure a user has a resource quota entry in the database."""
+        logger.info(f"[AZURE DEBUG] Starting ensure_user_has_resource_quota for user {user_id}, app {app_id}")
         
         try:
             conn = self.db.get_connection()
             cursor = conn.cursor(dictionary=True)
             
+            # Log DB connection success
+            logger.info(f"[AZURE DEBUG] Database connection established for user {user_id}")
+            
             # First, get the user's active subscription
-            cursor.execute(f"""
+            subscription_query = f"""
                 SELECT id, plan_id, status, current_period_start, current_period_end 
                 FROM {DB_TABLE_USER_SUBSCRIPTIONS}
                 WHERE user_id = %s AND app_id = %s AND status = 'active'
                 ORDER BY created_at DESC LIMIT 1
-            """, (user_id, app_id))
+            """
+            logger.info(f"[AZURE DEBUG] Executing subscription query: {subscription_query} with params {user_id}, {app_id}")
             
+            cursor.execute(subscription_query, (user_id, app_id))
             subscription = cursor.fetchone()
             
-            # If no active subscription found, check if there's a free plan to assign
-            if not subscription:
+            if subscription:
+                logger.info(f"[AZURE DEBUG] Found active subscription for user {user_id}: {subscription}")
+            else:
+                logger.info(f"[AZURE DEBUG] No active subscription found for user {user_id}, will check for free plan")
+                
                 # Check if there's a free plan for the app
-                cursor.execute(f"""
+                free_plan_query = f"""
                     SELECT id FROM {DB_TABLE_SUBSCRIPTION_PLANS}
                     WHERE app_id = %s AND amount = 0 AND is_active = TRUE
                     LIMIT 1
-                """, (app_id,))
+                """
+                logger.info(f"[AZURE DEBUG] Executing free plan query: {free_plan_query} with param {app_id}")
                 
+                cursor.execute(free_plan_query, (app_id,))
                 free_plan = cursor.fetchone()
                 
                 if not free_plan:
-                    logger.warning(f"No free plan found for app {app_id}")
+                    logger.warning(f"[AZURE DEBUG] No free plan found for app {app_id}")
                     cursor.close()
                     conn.close()
                     return False
+                
+                logger.info(f"[AZURE DEBUG] Found free plan for app {app_id}: {free_plan}")
                 
                 # Create a new subscription for the free plan
                 free_plan_id = free_plan['id']
@@ -2025,20 +2047,29 @@ class PaymentService:
                 current_period_start = datetime.now()
                 current_period_end = current_period_start + timedelta(days=30)  # 30 days for free plan
                 
-                cursor.execute(f"""
+                insert_subscription_query = f"""
                     INSERT INTO {DB_TABLE_USER_SUBSCRIPTIONS}
                     (id, user_id, plan_id, status, app_id, current_period_start, current_period_end)
                     VALUES (%s, %s, %s, 'active', %s, %s, %s)
-                """, (
-                    subscription_id, 
-                    user_id, 
-                    free_plan_id, 
-                    app_id,
-                    current_period_start,
-                    current_period_end
-                ))
+                """
+                logger.info(f"[AZURE DEBUG] Creating free subscription with query: {insert_subscription_query}")
                 
-                conn.commit()
+                try:
+                    cursor.execute(insert_subscription_query, (
+                        subscription_id, 
+                        user_id, 
+                        free_plan_id, 
+                        app_id,
+                        current_period_start,
+                        current_period_end
+                    ))
+                    
+                    conn.commit()
+                    logger.info(f"[AZURE DEBUG] Created free subscription {subscription_id} for user {user_id}")
+                except Exception as sub_err:
+                    logger.error(f"[AZURE DEBUG] Error creating free subscription: {str(sub_err)}")
+                    logger.error(traceback.format_exc())
+                    conn.rollback()
                 
                 # Now we have a subscription ID for the free plan
                 subscription = {
@@ -2050,45 +2081,56 @@ class PaymentService:
             
             # Check if the user already has a resource quota entry for this subscription
             subscription_id = subscription['id']
-            cursor.execute(f"""
+            quota_query = f"""
                 SELECT id 
                 FROM {DB_TABLE_RESOURCE_USAGE}
                 WHERE user_id = %s AND subscription_id = %s AND app_id = %s
                 ORDER BY created_at DESC LIMIT 1
-            """, (user_id, subscription_id, app_id))
+            """
+            logger.info(f"[AZURE DEBUG] Checking existing quota with query: {quota_query}")
             
+            cursor.execute(quota_query, (user_id, subscription_id, app_id))
             quota_entry = cursor.fetchone()
             
             # If user already has a quota entry for this subscription, no need to create a new one
             if quota_entry:
-                logger.info(f"User {user_id} already has resource quota entry for subscription {subscription_id}: {quota_entry['id']}")
+                logger.info(f"[AZURE DEBUG] User {user_id} already has resource quota entry: {quota_entry['id']}")
                 cursor.close()
                 conn.close()
                 return True
             
+            logger.info(f"[AZURE DEBUG] No quota entry found, creating new one")
+            
             # Get the plan features
-            cursor.execute(f"""
+            features_query = f"""
                 SELECT features FROM {DB_TABLE_SUBSCRIPTION_PLANS}
                 WHERE id = %s
-            """, (subscription['plan_id'],))
+            """
+            logger.info(f"[AZURE DEBUG] Getting plan features with query: {features_query}")
             
+            cursor.execute(features_query, (subscription['plan_id'],))
             plan = cursor.fetchone()
             
             if not plan:
-                logger.error(f"Plan {subscription['plan_id']} not found")
+                logger.error(f"[AZURE DEBUG] Plan {subscription['plan_id']} not found")
                 cursor.close()
                 conn.close()
                 return False
             
             # Parse features
             features_str = plan['features']
+            logger.info(f"[AZURE DEBUG] Plan features (raw): {features_str}")
+            
             if isinstance(features_str, str):
                 try:
                     features = json.loads(features_str)
-                except json.JSONDecodeError:
+                    logger.info(f"[AZURE DEBUG] Parsed plan features: {features}")
+                except json.JSONDecodeError as json_err:
+                    logger.error(f"[AZURE DEBUG] JSON parse error: {str(json_err)}")
                     features = {}
             else:
                 features = features_str or {}
+                logger.info(f"[AZURE DEBUG] Non-string plan features: {features}")
             
             # Set quota based on app
             if app_id == 'marketfit':
@@ -2100,26 +2142,43 @@ class PaymentService:
                 perplexity_requests_quota = 0  # Not used for SalesWit
                 requests_quota = features.get('requests', 20)
             
+            logger.info(f"[AZURE DEBUG] Setting quota: doc_pages={document_pages_quota}, perplexity={perplexity_requests_quota}, requests={requests_quota}")
+            
             # Create the resource quota entry
-            cursor.execute(f"""
+            insert_quota_query = f"""
                 INSERT INTO {DB_TABLE_RESOURCE_USAGE}
                 (user_id, subscription_id, app_id, billing_period_start, billing_period_end,
                 document_pages_quota, perplexity_requests_quota, requests_quota)
                 VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
-            """, (
-                user_id,
-                subscription_id,
-                app_id,
-                subscription.get('current_period_start') or datetime.now(),
-                subscription.get('current_period_end') or (datetime.now() + timedelta(days=30)),
-                document_pages_quota,
-                perplexity_requests_quota,
-                requests_quota
-            ))
+            """
+            logger.info(f"[AZURE DEBUG] Creating quota with query: {insert_quota_query}")
             
-            conn.commit()
+            period_start = subscription.get('current_period_start')
+            period_end = subscription.get('current_period_end')
             
-            logger.info(f"Created resource quota entry for user {user_id}, subscription {subscription_id}")
+            if not period_start or not period_end:
+                logger.warning(f"[AZURE DEBUG] Missing period dates, using defaults")
+                period_start = datetime.now()
+                period_end = period_start + timedelta(days=30)
+            
+            try:
+                cursor.execute(insert_quota_query, (
+                    user_id,
+                    subscription_id,
+                    app_id,
+                    period_start,
+                    period_end,
+                    document_pages_quota,
+                    perplexity_requests_quota,
+                    requests_quota
+                ))
+                
+                conn.commit()
+                logger.info(f"[AZURE DEBUG] Created resource quota for user {user_id}, subscription {subscription_id}")
+            except Exception as quota_err:
+                logger.error(f"[AZURE DEBUG] Error creating quota: {str(quota_err)}")
+                logger.error(traceback.format_exc())
+                conn.rollback()
             
             cursor.close()
             conn.close()
@@ -2127,7 +2186,7 @@ class PaymentService:
             return True
             
         except Exception as e:
-            logger.error(f"Error ensuring user has resource quota: {str(e)}")
+            logger.error(f"[AZURE DEBUG] Error in ensure_user_has_resource_quota: {str(e)}")
             logger.error(traceback.format_exc())
             return False
 
