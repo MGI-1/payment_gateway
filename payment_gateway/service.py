@@ -63,28 +63,72 @@ class PaymentService:
         logger.info(f"Creating subscription for user {user_id}, plan {plan_id}, app {app_id}")
         
         try:
+            # Phase 1: Get required data (separate connections)
+            plan = self._get_plan(plan_id)
+            if not plan:
+                raise ValueError(f"Plan with ID {plan_id} not found")
+            
+            existing_subscription = self._get_existing_subscription(user_id, app_id)
+            
+            # Phase 2: Handle based on plan type
+            if plan['amount'] == 0:
+                return self._handle_free_subscription(user_id, plan_id, app_id, plan, existing_subscription)
+            else:
+                return self._handle_paid_subscription(user_id, plan_id, app_id, plan, existing_subscription)
+                
+        except Exception as e:
+            logger.error(f"Error creating subscription: {str(e)}")
+            logger.error(traceback.format_exc())
+            raise
+
+    def _get_plan(self, plan_id):
+        """Get plan details with isolated connection"""
+        try:
             conn = self.db.get_connection()
             cursor = conn.cursor(dictionary=True)
             
-            # Get the plan details
             cursor.execute(f"SELECT * FROM {DB_TABLE_SUBSCRIPTION_PLANS} WHERE id = %s", (plan_id,))
             plan = cursor.fetchone()
             
-            if not plan:
-                cursor.close()
-                conn.close()
-                raise ValueError(f"Plan with ID {plan_id} not found")
+            cursor.close()
+            conn.close()
+            return plan
             
-            # Check if user already has an active subscription
+        except Exception as e:
+            logger.error(f"Error getting plan: {str(e)}")
+            raise
+
+    def _get_existing_subscription(self, user_id, app_id):
+        """Get existing subscription with isolated connection"""
+        try:
+            conn = self.db.get_connection()
+            cursor = conn.cursor(dictionary=True)
+            
             cursor.execute(f"""
                 SELECT * FROM {DB_TABLE_USER_SUBSCRIPTIONS} 
                 WHERE user_id = %s AND app_id = %s AND status = 'active'
             """, (user_id, app_id))
             
-            existing_subscription = cursor.fetchone()
+            existing = cursor.fetchone()
             
-            # If free plan, just create a database entry
-            if plan['amount'] == 0:
+            cursor.close()
+            conn.close()
+            return existing
+            
+        except Exception as e:
+            logger.error(f"Error getting existing subscription: {str(e)}")
+            raise
+
+    def _handle_free_subscription(self, user_id, plan_id, app_id, plan, existing_subscription):
+        """Handle free subscription creation with focused transaction"""
+        try:
+            conn = self.db.get_connection()
+            cursor = conn.cursor(dictionary=True)
+            
+            # Start transaction for free subscription
+            conn.begin()
+            
+            try:
                 if existing_subscription:
                     # User already has a subscription, update if it's not the same plan
                     if existing_subscription['plan_id'] != plan_id:
@@ -114,54 +158,89 @@ class PaymentService:
                     """, (subscription_id, user_id, plan_id, current_period_start, current_period_end, app_id))
                 
                 conn.commit()
-                cursor.close()
-                conn.close()
                 
-                return {
+                result = {
                     'id': subscription_id,
                     'user_id': user_id,
                     'plan_id': plan_id,
                     'status': 'active',
                     'app_id': app_id
                 }
+                
+                cursor.close()
+                conn.close()
+                return result
+                
+            except Exception as e:
+                conn.rollback()
+                cursor.close()
+                conn.close()
+                raise
+                
+        except Exception as e:
+            logger.error(f"Error creating free subscription: {str(e)}")
+            raise
+
+    def _handle_paid_subscription(self, user_id, plan_id, app_id, plan, existing_subscription):
+        """Handle paid subscription creation"""
+        try:
+            # Phase 1: Get user info (separate connection)
+            user = self._get_user_info(user_id)
+            if not user:
+                raise ValueError(f"User with ID {user_id} not found")
             
-            # For paid plans, get customer info
+            # Phase 2: Create gateway subscription (outside database transaction)
+            gateway_response = self._create_gateway_subscription(plan, user, app_id)
+            
+            # Phase 3: Save to database (focused transaction)
+            return self._save_paid_subscription(user_id, plan_id, app_id, gateway_response)
+            
+        except Exception as e:
+            logger.error(f"Error creating paid subscription: {str(e)}")
+            raise
+
+    def _get_user_info(self, user_id):
+        """Get user info with isolated connection - THIS FIXES LINE 129"""
+        try:
+            conn = self.db.get_connection()
+            cursor = conn.cursor(dictionary=True)
+            
             cursor.execute("SELECT email, display_name FROM users WHERE id = %s OR google_uid = %s", (user_id, user_id))
             user = cursor.fetchone()
             
-            if not user:
-                cursor.close()
-                conn.close()
-                raise ValueError(f"User with ID {user_id} not found")
+            cursor.close()
+            conn.close()
+            return user
             
+        except Exception as e:
+            logger.error(f"Error getting user info: {str(e)}")
+            raise
+
+    def _create_gateway_subscription(self, plan, user, app_id):
+        """Create subscription with payment gateway (no database operations)"""
+        try:
             # Get payment gateways from plan
             payment_gateways = parse_json_field(plan.get('payment_gateways'), ['razorpay'])
             
             # Determine which gateway to use (use first in list)
             gateway = payment_gateways[0] if payment_gateways else 'razorpay'
             
-            # Create gateway-specific subscription
-            gateway_sub_id = None
-            gateway_response = None
-            
             if gateway == 'razorpay':
-                # Use the Razorpay provider
-                gateway_plan_id = plan.get('razorpay_plan_id') or plan_id
+                gateway_plan_id = plan.get('razorpay_plan_id') or plan['id']
                 
                 response = self.razorpay.create_subscription(
                     gateway_plan_id,
-                    {'user_id': user_id, 'email': user.get('email'), 'name': user.get('display_name')},
+                    {'user_id': user['id'], 'email': user.get('email'), 'name': user.get('display_name')},
                     app_id
                 )
                 
                 if response.get('error'):
                     raise ValueError(response.get('message', 'Failed to create Razorpay subscription'))
                 
-                gateway_sub_id = response.get('id')
-                gateway_response = response
+                response['gateway'] = gateway
+                return response
                 
             elif gateway == 'paypal':
-                # Use the PayPal provider
                 gateway_plan_id = plan.get('paypal_plan_id')
                 
                 if not gateway_plan_id:
@@ -169,70 +248,93 @@ class PaymentService:
                 
                 response = self.paypal.create_subscription(
                     gateway_plan_id,
-                    {'user_id': user_id, 'email': user.get('email'), 'name': user.get('display_name')},
+                    {'user_id': user['id'], 'email': user.get('email'), 'name': user.get('display_name')},
                     app_id
                 )
                 
                 if response.get('error'):
                     raise ValueError(response.get('message', 'Failed to create PayPal subscription'))
                 
-                gateway_sub_id = response.get('id')
-                gateway_response = response
+                response['gateway'] = gateway
+                return response
             
             else:
                 raise ValueError(f"Unsupported payment gateway: {gateway}")
-            
-            # Save the subscription details to the database
-            subscription_id = generate_id('sub_')
-            
-            # Set the appropriate field based on gateway
-            razorpay_subscription_id = gateway_sub_id if gateway == 'razorpay' else None
-            paypal_subscription_id = gateway_sub_id if gateway == 'paypal' else None
-            
-            cursor.execute(f"""
-                INSERT INTO {DB_TABLE_USER_SUBSCRIPTIONS}
-                (id, user_id, plan_id, razorpay_subscription_id, paypal_subscription_id, status, app_id, metadata)
-                VALUES (%s, %s, %s, %s, %s, 'created', %s, %s)
-            """, (
-                subscription_id, 
-                user_id, 
-                plan_id, 
-                razorpay_subscription_id,
-                paypal_subscription_id,
-                app_id, 
-                json.dumps(gateway_response)
-            ))
-            
-            # Log the subscription creation
-            self.db.log_event(
-                'subscription_created', 
-                gateway_sub_id, 
-                user_id, 
-                gateway_response,
-                provider=gateway,
-                processed=True
-            )
-            
-            conn.commit()
-            cursor.close()
-            conn.close()
                 
-            # Return the subscription with the checkout URL if available
-            return {
-                'id': subscription_id,
-                'razorpay_subscription_id': razorpay_subscription_id,
-                'paypal_subscription_id': paypal_subscription_id,
-                'status': 'created',
-                'short_url': gateway_response.get('short_url'),
-                'user_id': user_id,
-                'plan_id': plan_id,
-                'app_id': app_id,
-                'gateway': gateway
-            }
-            
         except Exception as e:
-            logger.error(f"Error creating subscription: {str(e)}")
-            logger.error(traceback.format_exc())
+            logger.error(f"Error creating gateway subscription: {str(e)}")
+            raise
+
+    def _save_paid_subscription(self, user_id, plan_id, app_id, gateway_response):
+        """Save paid subscription to database with focused transaction"""
+        try:
+            conn = self.db.get_connection()
+            cursor = conn.cursor(dictionary=True)
+            
+            # Start focused transaction
+            conn.begin()
+            
+            try:
+                # Generate IDs
+                subscription_id = generate_id('sub_')
+                gateway_sub_id = gateway_response.get('id')
+                gateway = gateway_response.get('gateway')
+                
+                # Set the appropriate field based on gateway
+                razorpay_subscription_id = gateway_sub_id if gateway == 'razorpay' else None
+                paypal_subscription_id = gateway_sub_id if gateway == 'paypal' else None
+                
+                # Insert subscription record
+                cursor.execute(f"""
+                    INSERT INTO {DB_TABLE_USER_SUBSCRIPTIONS}
+                    (id, user_id, plan_id, razorpay_subscription_id, paypal_subscription_id, status, app_id, metadata)
+                    VALUES (%s, %s, %s, %s, %s, 'created', %s, %s)
+                """, (
+                    subscription_id, 
+                    user_id, 
+                    plan_id, 
+                    razorpay_subscription_id,
+                    paypal_subscription_id,
+                    app_id, 
+                    json.dumps(gateway_response)
+                ))
+                
+                # Log the subscription creation
+                self.db.log_event(
+                    'subscription_created', 
+                    gateway_sub_id, 
+                    user_id, 
+                    gateway_response,
+                    provider=gateway,
+                    processed=True
+                )
+                
+                conn.commit()
+                
+                result = {
+                    'id': subscription_id,
+                    'razorpay_subscription_id': razorpay_subscription_id,
+                    'paypal_subscription_id': paypal_subscription_id,
+                    'status': 'created',
+                    'short_url': gateway_response.get('short_url'),
+                    'user_id': user_id,
+                    'plan_id': plan_id,
+                    'app_id': app_id,
+                    'gateway': gateway
+                }
+                
+                cursor.close()
+                conn.close()
+                return result
+                
+            except Exception as e:
+                conn.rollback()
+                cursor.close()
+                conn.close()
+                raise
+                
+        except Exception as e:
+            logger.error(f"Error saving paid subscription: {str(e)}")
             raise
     
     def create_paypal_subscription(self, user_id, plan_id, paypal_subscription_id, app_id='marketfit'):
@@ -251,10 +353,29 @@ class PaymentService:
         logger.info(f"Creating PayPal subscription for user {user_id}, plan {plan_id}")
         
         try:
+            plan = self._get_plan_for_app(plan_id, app_id)
+            if not plan:
+                return {'error': 'Plan not found'}
+            
+            existing = self._get_existing_subscription(user_id, app_id)
+            
+            subscription_id = self._save_paypal_subscription_transaction(
+                user_id, plan_id, paypal_subscription_id, app_id, plan, existing
+            )
+            
+            return self._get_subscription_details(subscription_id)
+            
+        except Exception as e:
+            logger.error(f"Error creating PayPal subscription: {str(e)}")
+            logger.error(traceback.format_exc())
+            return {'error': str(e)}
+
+    def _get_plan_for_app(self, plan_id, app_id):
+        """Get plan details for specific app with isolated connection"""
+        try:
             conn = self.db.get_connection()
             cursor = conn.cursor(dictionary=True)
             
-            # Get the plan details
             cursor.execute(f"""
                 SELECT * FROM {DB_TABLE_SUBSCRIPTION_PLANS}
                 WHERE id = %s AND app_id = %s
@@ -262,55 +383,75 @@ class PaymentService:
             
             plan = cursor.fetchone()
             
-            if not plan:
-                logger.error(f"Plan not found: {plan_id}")
+            cursor.close()
+            conn.close()
+            return plan
+            
+        except Exception as e:
+            logger.error(f"Error getting plan for app: {str(e)}")
+            raise
+
+    def _save_paypal_subscription_transaction(self, user_id, plan_id, paypal_subscription_id, app_id, plan, existing):
+        """Save PayPal subscription with focused transaction"""
+        try:
+            conn = self.db.get_connection()
+            cursor = conn.cursor(dictionary=True)
+            
+            conn.begin()
+            
+            try:
+                # Calculate subscription period
+                start_date = datetime.now()
+                period_end = calculate_period_end(start_date, plan['interval'], plan['interval_count'])
+                
+                if existing:
+                    # Update existing subscription
+                    cursor.execute(f"""
+                        UPDATE {DB_TABLE_USER_SUBSCRIPTIONS}
+                        SET plan_id = %s,
+                            paypal_subscription_id = %s,
+                            status = 'active',
+                            current_period_start = %s,
+                            current_period_end = %s,
+                            updated_at = NOW()
+                        WHERE id = %s
+                    """, (plan_id, paypal_subscription_id, start_date, period_end, existing['id']))
+                    
+                    subscription_id = existing['id']
+                else:
+                    # Create new subscription record
+                    subscription_id = generate_id('sub_')
+                    
+                    cursor.execute(f"""
+                        INSERT INTO {DB_TABLE_USER_SUBSCRIPTIONS}
+                        (id, user_id, plan_id, paypal_subscription_id, status, 
+                        current_period_start, current_period_end, app_id)
+                        VALUES (%s, %s, %s, %s, 'active', %s, %s, %s)
+                    """, (subscription_id, user_id, plan_id, paypal_subscription_id, 
+                        start_date, period_end, app_id))
+                
+                conn.commit()
                 cursor.close()
                 conn.close()
-                return {'error': 'Plan not found'}
-            
-            # Check if the user already has an active subscription
-            cursor.execute(f"""
-                SELECT * FROM {DB_TABLE_USER_SUBSCRIPTIONS}
-                WHERE user_id = %s AND app_id = %s AND status = 'active'
-            """, (user_id, app_id))
-            
-            existing_subscription = cursor.fetchone()
-            
-            # Calculate subscription period
-            start_date = datetime.now()
-            period_end = calculate_period_end(start_date, plan['interval'], plan['interval_count'])
-            
-            if existing_subscription:
-                # Update existing subscription
-                cursor.execute(f"""
-                    UPDATE {DB_TABLE_USER_SUBSCRIPTIONS}
-                    SET plan_id = %s,
-                        paypal_subscription_id = %s,
-                        status = 'active',
-                        current_period_start = %s,
-                        current_period_end = %s,
-                        updated_at = NOW()
-                    WHERE id = %s
-                """, (plan_id, paypal_subscription_id, start_date, period_end, existing_subscription['id']))
                 
-                subscription_id = existing_subscription['id']
-            else:
-                # Create new subscription record
-                subscription_id = generate_id('sub_')
+                return subscription_id
                 
-                cursor.execute(f"""
-                    INSERT INTO {DB_TABLE_USER_SUBSCRIPTIONS}
-                    (id, user_id, plan_id, paypal_subscription_id, status, 
-                    current_period_start, current_period_end, app_id)
-                    VALUES (%s, %s, %s, %s, 'active', %s, %s, %s)
-                """, (subscription_id, user_id, plan_id, paypal_subscription_id, 
-                    start_date, period_end, app_id))
-        
+            except Exception as e:
+                conn.rollback()
+                cursor.close()
+                conn.close()
+                raise
+                
+        except Exception as e:
+            logger.error(f"Error saving PayPal subscription: {str(e)}")
+            raise
+
+    def _get_subscription_details(self, subscription_id):
+        """Get subscription details with isolated connection"""
+        try:
+            conn = self.db.get_connection()
+            cursor = conn.cursor(dictionary=True)
             
-            # Commit the transaction
-            conn.commit()
-            
-            # Get the updated subscription record
             cursor.execute(f"""
                 SELECT us.*, sp.name as plan_name, sp.amount, sp.currency, sp.interval
                 FROM {DB_TABLE_USER_SUBSCRIPTIONS} us
@@ -322,14 +463,12 @@ class PaymentService:
             
             cursor.close()
             conn.close()
-
-
             
             return subscription
+            
         except Exception as e:
-            logger.error(f"Error creating PayPal subscription: {str(e)}")
-            logger.error(traceback.format_exc())
-            return {'error': str(e)}
+            logger.error(f"Error getting subscription details: {str(e)}")
+            raise
     
     def get_user_subscription(self, user_id, app_id):
         """
@@ -345,10 +484,31 @@ class PaymentService:
         logger.info(f"Getting subscription for user {user_id}, app {app_id}")
         
         try:
+            # Try active first
+            subscription = self._get_active_subscription(user_id, app_id)
+            
+            # Try pending if no active
+            if not subscription:
+                subscription = self._get_pending_subscription(user_id, app_id)
+            
+            # Auto-create free if none found
+            if not subscription:
+                free_plan_id = f"plan_free_{app_id}"
+                return self.create_subscription(user_id, free_plan_id, app_id)
+            
+            return self._parse_subscription_json_fields(subscription)
+            
+        except Exception as e:
+            logger.error(f"Error getting user subscription: {str(e)}")
+            logger.error(traceback.format_exc())
+            raise
+
+    def _get_active_subscription(self, user_id, app_id):
+        """Get active subscription with isolated connection"""
+        try:
             conn = self.db.get_connection()
             cursor = conn.cursor(dictionary=True)
             
-            # Get user's active subscription
             cursor.execute(f"""
                 SELECT us.*, sp.name as plan_name, sp.features, sp.amount, sp.currency, sp.interval 
                 FROM {DB_TABLE_USER_SUBSCRIPTIONS} us
@@ -359,40 +519,48 @@ class PaymentService:
             
             subscription = cursor.fetchone()
             
-            # If no active subscription, check for a pending one
-            if not subscription:
-                cursor.execute(f"""
-                    SELECT us.*, sp.name as plan_name, sp.features, sp.amount, sp.currency, sp.interval 
-                    FROM {DB_TABLE_USER_SUBSCRIPTIONS} us
-                    JOIN {DB_TABLE_SUBSCRIPTION_PLANS} sp ON us.plan_id = sp.id
-                    WHERE us.user_id = %s AND us.app_id = %s AND us.status = 'created'
-                    ORDER BY us.created_at DESC LIMIT 1
-                """, (user_id, app_id))
-                subscription = cursor.fetchone()
-            
             cursor.close()
             conn.close()
-            
-            # If no subscription found, return the free plan
-            if not subscription:
-                # Auto-create free plan subscription
-                free_plan_id = f"plan_free_{app_id}"
-                return self.create_subscription(user_id, free_plan_id, app_id)
-            
-            # Parse features JSON
-            if subscription and subscription.get('features'):
-                subscription['features'] = parse_json_field(subscription['features'])
-            
-            # Parse metadata JSON
-            if subscription and subscription.get('metadata'):
-                subscription['metadata'] = parse_json_field(subscription['metadata'])
-            
             return subscription
             
         except Exception as e:
-            logger.error(f"Error getting user subscription: {str(e)}")
-            logger.error(traceback.format_exc())
+            logger.error(f"Error getting active subscription: {str(e)}")
             raise
+
+    def _get_pending_subscription(self, user_id, app_id):
+        """Get pending subscription with isolated connection"""
+        try:
+            conn = self.db.get_connection()
+            cursor = conn.cursor(dictionary=True)
+            
+            cursor.execute(f"""
+                SELECT us.*, sp.name as plan_name, sp.features, sp.amount, sp.currency, sp.interval 
+                FROM {DB_TABLE_USER_SUBSCRIPTIONS} us
+                JOIN {DB_TABLE_SUBSCRIPTION_PLANS} sp ON us.plan_id = sp.id
+                WHERE us.user_id = %s AND us.app_id = %s AND us.status = 'created'
+                ORDER BY us.created_at DESC LIMIT 1
+            """, (user_id, app_id))
+            
+            subscription = cursor.fetchone()
+            
+            cursor.close()
+            conn.close()
+            return subscription
+            
+        except Exception as e:
+            logger.error(f"Error getting pending subscription: {str(e)}")
+            raise
+
+    def _parse_subscription_json_fields(self, subscription):
+        """Parse JSON fields in subscription"""
+        if subscription:
+            if subscription.get('features'):
+                subscription['features'] = parse_json_field(subscription['features'])
+            
+            if subscription.get('metadata'):
+                subscription['metadata'] = parse_json_field(subscription['metadata'])
+        
+        return subscription
     
     def get_available_plans(self, app_id='marketfit'):
         """
@@ -419,6 +587,9 @@ class PaymentService:
             
             plans = cursor.fetchall()
             
+            cursor.close()
+            conn.close()
+            
             # Process the plans - parse JSON fields
             for plan in plans:
                 if plan.get('features'):
@@ -426,9 +597,6 @@ class PaymentService:
                 
                 if plan.get('payment_gateways'):
                     plan['payment_gateways'] = parse_json_field(plan['payment_gateways'], ['razorpay'])
-            
-            cursor.close()
-            conn.close()
             
             return plans
         except Exception as e:
@@ -456,20 +624,8 @@ class PaymentService:
             
             logger.info(f"Processing {provider} webhook event: {event_type}")
             
-            # Log the webhook event for debugging
-            entity_id = None
-            user_id = None
-            
-            # Extract entity ID and user ID from payload
-            if provider == 'razorpay':
-                if 'payload' in payload:
-                    if 'payment' in payload['payload']:
-                        entity_id = payload['payload']['payment'].get('id')
-                    elif 'subscription' in payload['payload']:
-                        entity_id = payload['payload']['subscription'].get('id')
-                        # Try to extract user_id from notes
-                        if 'notes' in payload['payload']['subscription']:
-                            user_id = payload['payload']['subscription']['notes'].get('user_id')
+            # Extract entity and user IDs
+            entity_id, user_id = self._extract_webhook_ids(payload, provider)
             
             # Log the webhook event
             self.db.log_event(
@@ -483,19 +639,7 @@ class PaymentService:
             
             # Route to the appropriate handler based on the event type
             if provider == 'razorpay':
-                if event_type == 'subscription.authenticated':
-                    result = self._handle_razorpay_subscription_authenticated(payload)
-                elif event_type == 'subscription.activated':
-                    result = self._handle_razorpay_subscription_activated(payload)
-                elif event_type == 'subscription.charged':
-                    result = self._handle_razorpay_subscription_charged(payload)
-                elif event_type == 'subscription.completed':
-                    result = self._handle_razorpay_subscription_completed(payload)
-                elif event_type == 'subscription.cancelled':
-                    result = self._handle_razorpay_subscription_cancelled(payload)
-                else:
-                    logger.info(f"Unhandled Razorpay event type: {event_type}")
-                    result = {'status': 'ignored', 'message': f'Unhandled event type: {event_type}'}
+                result = self._handle_razorpay_webhook(event_type, payload)
             elif provider == 'paypal':
                 logger.info(f"PayPal webhook handling not fully implemented: {event_type}")
                 result = {'status': 'ignored', 'message': 'PayPal webhook handling not implemented'}
@@ -519,53 +663,64 @@ class PaymentService:
             logger.error(f"Error handling webhook: {str(e)}")
             logger.error(traceback.format_exc())
             return {'status': 'error', 'message': str(e)}
+
+    def _extract_webhook_ids(self, payload, provider):
+        """Extract entity ID and user ID from webhook payload"""
+        entity_id = None
+        user_id = None
+        
+        if provider == 'razorpay':
+            if 'payload' in payload:
+                if 'payment' in payload['payload']:
+                    entity_id = payload['payload']['payment'].get('id')
+                elif 'subscription' in payload['payload']:
+                    entity_id = payload['payload']['subscription'].get('id')
+                    # Try to extract user_id from notes
+                    if 'notes' in payload['payload']['subscription']:
+                        user_id = payload['payload']['subscription']['notes'].get('user_id')
+        
+        return entity_id, user_id
+
+    def _handle_razorpay_webhook(self, event_type, payload):
+        """Handle Razorpay webhook events"""
+        if event_type == 'subscription.authenticated':
+            return self._handle_razorpay_subscription_authenticated(payload)
+        elif event_type == 'subscription.activated':
+            return self._handle_razorpay_subscription_activated(payload)
+        elif event_type == 'subscription.charged':
+            return self._handle_razorpay_subscription_charged(payload)
+        elif event_type == 'subscription.completed':
+            return self._handle_razorpay_subscription_completed(payload)
+        elif event_type == 'subscription.cancelled':
+            return self._handle_razorpay_subscription_cancelled(payload)
+        else:
+            logger.info(f"Unhandled Razorpay event type: {event_type}")
+            return {'status': 'ignored', 'message': f'Unhandled event type: {event_type}'}
     
     def _handle_razorpay_subscription_authenticated(self, payload):
         """Handle subscription.authenticated webhook event"""
         try:
-            # Extract subscription data
-            subscription_data = payload.get('payload', {}).get('subscription', {}).get('entity', {})
+            subscription_data = self._extract_subscription_data(payload)
             razorpay_subscription_id = subscription_data.get('id')
             
-            # Debug logging
             logger.info(f"Subscription Authenticated - Subscription ID: {razorpay_subscription_id}")
             
-            # Validate required fields
             if not razorpay_subscription_id:
                 logger.error("No subscription ID in authenticated webhook")
                 return {'status': 'error', 'message': 'Missing subscription ID'}
             
-            # Connect to database
-            conn = self.db.get_connection()
-            cursor = conn.cursor(dictionary=True)
-            
-            # Get the subscription record
-            cursor.execute(f"""
-                SELECT id, user_id FROM {DB_TABLE_USER_SUBSCRIPTIONS}
-                WHERE razorpay_subscription_id = %s
-            """, (razorpay_subscription_id,))
-            
-            subscription = cursor.fetchone()
+            subscription = self._get_subscription_by_razorpay_id(razorpay_subscription_id)
             
             if not subscription:
                 logger.error(f"Subscription not found for Razorpay ID: {razorpay_subscription_id}")
-                cursor.close()
-                conn.close()
                 return {'status': 'error', 'message': 'Subscription not found'}
             
-            # Update subscription status
-            cursor.execute(f"""
-                UPDATE {DB_TABLE_USER_SUBSCRIPTIONS}
-                SET status = 'authenticated', 
-                    updated_at = NOW(),
-                    metadata = JSON_MERGE_PATCH(IFNULL(metadata, '{{}}'), %s)
-                WHERE razorpay_subscription_id = %s
-                    AND status != 'active';
-            """, (json.dumps(subscription_data), razorpay_subscription_id))
-            
-            conn.commit()
-            cursor.close()
-            conn.close()
+            self._update_subscription_status(
+                razorpay_subscription_id, 
+                'authenticated', 
+                subscription_data,
+                condition="AND status != 'active'"
+            )
             
             logger.info(f"Subscription authenticated: {razorpay_subscription_id}")
             return {'status': 'success', 'message': 'Subscription authenticated'}
@@ -574,27 +729,17 @@ class PaymentService:
             logger.error(f"Error handling subscription authenticated: {str(e)}")
             logger.error(traceback.format_exc())
             return {'status': 'error', 'message': str(e)}
-    
-    def _handle_razorpay_subscription_activated(self, payload):
-        """Handle subscription.activated webhook event"""
+
+    def _extract_subscription_data(self, payload):
+        """Extract subscription data from webhook payload"""
+        return payload.get('payload', {}).get('subscription', {}).get('entity', {})
+
+    def _get_subscription_by_razorpay_id(self, razorpay_subscription_id):
+        """Get subscription by Razorpay ID with isolated connection"""
         try:
-            # Extract subscription data
-            subscription_data = payload.get('payload', {}).get('subscription', {}).get('entity', {})
-            razorpay_subscription_id = subscription_data.get('id')
-            
-            # Debug logging
-            logger.info(f"Subscription Activated - Subscription ID: {razorpay_subscription_id}")
-            
-            # Validate required fields
-            if not razorpay_subscription_id:
-                logger.error("No subscription ID in activated webhook")
-                return {'status': 'error', 'message': 'Missing subscription ID'}
-            
-            # Connect to database
             conn = self.db.get_connection()
             cursor = conn.cursor(dictionary=True)
             
-            # Get the subscription record
             cursor.execute(f"""
                 SELECT id, user_id, plan_id, app_id FROM {DB_TABLE_USER_SUBSCRIPTIONS}
                 WHERE razorpay_subscription_id = %s
@@ -602,71 +747,65 @@ class PaymentService:
             
             subscription = cursor.fetchone()
             
-            if not subscription:
-                logger.error(f"Subscription not found for Razorpay ID: {razorpay_subscription_id}")
-                cursor.close()
-                conn.close()
-                return {'status': 'error', 'message': 'Subscription not found'}
+            cursor.close()
+            conn.close()
+            return subscription
             
-            # Calculate subscription period
-            start_date = datetime.now()
+        except Exception as e:
+            logger.error(f"Error getting subscription by Razorpay ID: {str(e)}")
+            raise
+
+    def _update_subscription_status(self, razorpay_subscription_id, status, subscription_data, condition=""):
+        """Update subscription status with isolated connection"""
+        try:
+            conn = self.db.get_connection()
+            cursor = conn.cursor(dictionary=True)
             
-            # Try to get start date from payload
-            start_at = subscription_data.get('start_at')
-            if start_at:
-                try:
-                    start_timestamp = int(start_at)
-                    start_date = datetime.fromtimestamp(start_timestamp)
-                except (ValueError, TypeError):
-                    logger.error(f"Invalid start_at value: {start_at}")
-                    # Continue with current date as fallback
-            
-            # Get plan details for interval
-            cursor.execute(f"""
-                SELECT sp.interval, sp.interval_count
-                FROM {DB_TABLE_SUBSCRIPTION_PLANS} sp
-                JOIN {DB_TABLE_USER_SUBSCRIPTIONS} us ON sp.id = us.plan_id
-                WHERE us.razorpay_subscription_id = %s
-            """, (razorpay_subscription_id,))
-            
-            plan_details = cursor.fetchone()
-            
-            # Calculate period end based on plan
-            if plan_details:
-                period_end = calculate_period_end(
-                    start_date,
-                    plan_details['interval'],
-                    plan_details['interval_count']
-                )
-            else:
-                # Default to 30 days if plan details not found
-                period_end = start_date + timedelta(days=30)
-            
-            # Update subscription status
             cursor.execute(f"""
                 UPDATE {DB_TABLE_USER_SUBSCRIPTIONS}
-                SET status = 'active', 
-                    current_period_start = %s,
-                    current_period_end = %s,
+                SET status = %s, 
                     updated_at = NOW(),
                     metadata = JSON_MERGE_PATCH(IFNULL(metadata, '{{}}'), %s)
                 WHERE razorpay_subscription_id = %s
-            """, (start_date, period_end, json.dumps(subscription_data), razorpay_subscription_id))
+                {condition}
+            """, (status, json.dumps(subscription_data), razorpay_subscription_id))
             
             conn.commit()
-            
             cursor.close()
             conn.close()
             
+        except Exception as e:
+            logger.error(f"Error updating subscription status: {str(e)}")
+            raise
+    
+    def _handle_razorpay_subscription_activated(self, payload):
+        """Handle subscription.activated webhook event"""
+        try:
+            subscription_data = self._extract_subscription_data(payload)
+            razorpay_subscription_id = subscription_data.get('id')
+            
+            logger.info(f"Subscription Activated - Subscription ID: {razorpay_subscription_id}")
+            
+            if not razorpay_subscription_id:
+                logger.error("No subscription ID in activated webhook")
+                return {'status': 'error', 'message': 'Missing subscription ID'}
+            
+            subscription = self._get_subscription_by_razorpay_id(razorpay_subscription_id)
+            
+            if not subscription:
+                logger.error(f"Subscription not found for Razorpay ID: {razorpay_subscription_id}")
+                return {'status': 'error', 'message': 'Subscription not found'}
+            
+            # Calculate period dates
+            start_date, period_end = self._calculate_subscription_period(subscription_data, subscription['plan_id'])
+            
+            # Update subscription
+            self._activate_subscription_with_period(razorpay_subscription_id, start_date, period_end, subscription_data)
+            
             logger.info(f"Subscription activated: {razorpay_subscription_id}")
             
-            # Get user ID and app ID
-            user_id = subscription['user_id']
-            app_id = subscription['app_id']
-
-            # IMPORTANT: Initialize resource quota for the activated subscription
-            logger.info(f"Initializing resource quota for subscription {subscription['id']}")
-            quota_result = self.initialize_resource_quota(user_id, subscription['id'], app_id)
+            # Initialize resource quota separately
+            quota_result = self.initialize_resource_quota(subscription['user_id'], subscription['id'], subscription['app_id'])
             
             if not quota_result:
                 logger.error(f"Failed to initialize resource quota for subscription {subscription['id']}")
@@ -682,1178 +821,1276 @@ class PaymentService:
             logger.error(f"Error handling subscription activated: {str(e)}")
             logger.error(traceback.format_exc())
             return {'status': 'error', 'message': str(e)}
-    
-    def _handle_razorpay_subscription_charged(self, payload):
-        """Handle subscription.charged webhook event - renews subscription and resets resources"""
-        try:
-            # Extract all relevant data
-            subscription_data = payload.get('payload', {}).get('subscription', {})
+
+    def _calculate_subscription_period(self, subscription_data, plan_id):
+        """Calculate subscription period dates"""
+        start_date = datetime.now()
         
-            # Check if subscription data is nested inside an "entity" field
-            if 'entity' in subscription_data:
-                subscription_data = subscription_data.get('entity', {})
-            
-            invoice_data = payload.get('payload', {}).get('invoice', {})
-            payment_data = payload.get('payload', {}).get('payment', {}).get('entity', {})
-            
-            # Get IDs
-            razorpay_subscription_id = subscription_data.get('id')
-            razorpay_invoice_id = payment_data.get('invoice_id') if payment_data else None
-            razorpay_payment_id = payment_data.get('id') if payment_data else None
-            
-            # Debug logging
-            logger.info(f"Subscription Charged - Subscription ID: {razorpay_subscription_id}, Invoice ID: {razorpay_invoice_id}, Payment ID: {razorpay_payment_id}")
-            
-            # Validate required fields
-            if not razorpay_subscription_id:
-                logger.error("Missing subscription ID in charged webhook")
-                # Don't return - try to continue processing with available data
-            
-            # Connect to database
-            conn = self.db.get_connection()
-            cursor = conn.cursor(dictionary=True)
-            
-            # Get subscription details from DB
-            cursor.execute(f"""
-                SELECT id, user_id, app_id, plan_id FROM {DB_TABLE_USER_SUBSCRIPTIONS}
-                WHERE razorpay_subscription_id = %s
-            """, (razorpay_subscription_id,))
-            
-            subscription = cursor.fetchone()
-            
-            if not subscription:
-                logger.error(f"Subscription not found for Razorpay ID: {razorpay_subscription_id}")
-                cursor.close()
-                conn.close()
-                return {'status': 'error', 'message': 'Subscription not found'}
-            
-            # Create new period dates
-            new_start = datetime.now()
-            
-            # Get plan details
-            cursor.execute(f"SELECT * FROM {DB_TABLE_SUBSCRIPTION_PLANS} WHERE id = %s", (subscription['plan_id'],))
-            plan = cursor.fetchone()
-            
-            # Calculate new period end date
-            new_end = calculate_period_end(
-                new_start,
-                plan['interval'] if plan else 'month',
-                plan['interval_count'] if plan else 1
-            )
-            
-            # Update subscription status
-            cursor.execute(f"""
-                UPDATE {DB_TABLE_USER_SUBSCRIPTIONS}
-                SET status = 'active',
-                    current_period_start = %s,
-                    current_period_end = %s,
-                    updated_at = NOW(),
-                    metadata = JSON_MERGE_PATCH(IFNULL(metadata, '{{}}'), %s)
-                WHERE razorpay_subscription_id = %s
-            """, (new_start, new_end, json.dumps({
-                'subscription': subscription_data
-            }), razorpay_subscription_id))
-            
-            # If we have invoice details, record the invoice
-            if razorpay_invoice_id:
-                invoice_id = generate_id('inv_')
-                
-                # Get invoice amount
-                amount = payment_data.get('amount', 0)
-                currency = payment_data.get('currency', 'INR')
-                status = payment_data.get('status', 'pending')
-                
-                if status == 'captured':
-                    status = 'Paid'
-                
-                # Insert invoice record
-                cursor.execute(f"""
-                    INSERT INTO subscription_invoices
-                    (id, subscription_id, user_id, razorpay_invoice_id, 
-                    amount, currency, status, payment_id, invoice_date, app_id)
-                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, NOW(), %s)
-                """, (invoice_id, subscription['id'], subscription['user_id'], 
-                    razorpay_invoice_id, amount, currency, status, 
-                    razorpay_payment_id, subscription['app_id']))
-            
-            conn.commit()
-            cursor.close()
-            conn.close()
-            
-            logger.info(f"Subscription charged processed: {razorpay_subscription_id}")
-            
-            return {
-                'status': 'success',
-                'message': 'Subscription renewed and usage reset',
-                'new_period_start': new_start.isoformat(),
-                'new_period_end': new_end.isoformat()
-            }
-            
-        except Exception as e:
-            logger.error(f"Error handling subscription charged: {str(e)}")
-            logger.error(traceback.format_exc())
-            return {'status': 'error', 'message': str(e)}
-    
-    def _handle_razorpay_subscription_completed(self, payload):
-        """Handle subscription.completed webhook event"""
-        subscription_data = payload.get('payload', {}).get('subscription', {}).get('entity', {})
-        razorpay_subscription_id = subscription_data.get('id')
-        
-        if not razorpay_subscription_id:
-            logger.error("No subscription ID in completed webhook")
-            return {'status': 'error', 'message': 'Missing subscription ID'}
-        
-        try:
-            conn = self.db.get_connection()
-            cursor = conn.cursor(dictionary=True)
-            
-            # Get the subscription record
-            cursor.execute(f"""
-                SELECT id, user_id FROM {DB_TABLE_USER_SUBSCRIPTIONS}
-                WHERE razorpay_subscription_id = %s
-            """, (razorpay_subscription_id,))
-            
-            subscription = cursor.fetchone()
-            
-            if not subscription:
-                logger.error(f"Subscription not found for Razorpay ID: {razorpay_subscription_id}")
-                cursor.close()
-                conn.close()
-                return {'status': 'error', 'message': 'Subscription not found'}
-            
-            # Update subscription status
-            cursor.execute(f"""
-                UPDATE {DB_TABLE_USER_SUBSCRIPTIONS}
-                SET status = 'completed', 
-                    updated_at = NOW(),
-                    metadata = JSON_MERGE_PATCH(IFNULL(metadata, '{{}}'), %s)
-                WHERE razorpay_subscription_id = %s
-            """, (json.dumps(subscription_data), razorpay_subscription_id))
-            
-            conn.commit()
-            cursor.close()
-            conn.close()
-            
-            logger.info(f"Subscription completed: {razorpay_subscription_id}")
-            return {'status': 'success', 'message': 'Subscription marked as completed'}
-            
-        except Exception as e:
-            logger.error(f"Error handling subscription completed: {str(e)}")
-            logger.error(traceback.format_exc())
-            return {'status': 'error', 'message': str(e)}
-    
-    def _handle_razorpay_subscription_cancelled(self, payload):
-        """Handle subscription.cancelled webhook event"""
-        subscription_data = payload.get('payload', {}).get('subscription', {}).get('entity', {})
-        razorpay_subscription_id = subscription_data.get('id')
-        
-        if not razorpay_subscription_id:
-            logger.error("No subscription ID in cancelled webhook")
-            return {'status': 'error', 'message': 'Missing subscription ID'}
-        
-        try:
-            conn = self.db.get_connection()
-            cursor = conn.cursor(dictionary=True)
-            
-            # Get the subscription record
-            cursor.execute(f"""
-                SELECT id, user_id FROM {DB_TABLE_USER_SUBSCRIPTIONS}
-                WHERE razorpay_subscription_id = %s
-            """, (razorpay_subscription_id,))
-            
-            subscription = cursor.fetchone()
-            
-            if not subscription:
-                logger.error(f"Subscription not found for Razorpay ID: {razorpay_subscription_id}")
-                cursor.close()
-                conn.close()
-                return {'status': 'error', 'message': 'Subscription not found'}
-            
-            # Update subscription status
-            cursor.execute(f"""
-                UPDATE {DB_TABLE_USER_SUBSCRIPTIONS}
-                SET status = 'cancelled', 
-                    updated_at = NOW(),
-                    metadata = JSON_MERGE_PATCH(IFNULL(metadata, '{{}}'), %s)
-                WHERE razorpay_subscription_id = %s
-            """, (json.dumps(subscription_data), razorpay_subscription_id))
-            
-            conn.commit()
-            cursor.close()
-            conn.close()
-            
-            logger.info(f"Subscription cancelled: {razorpay_subscription_id}")
-            return {'status': 'success', 'message': 'Subscription marked as cancelled'}
-            
-        except Exception as e:
-            logger.error(f"Error handling subscription cancelled: {str(e)}")
-            logger.error(traceback.format_exc())
-            return {'status': 'error', 'message': str(e)}
-    
-    def cancel_subscription(self, user_id, subscription_id):
-        """
-        Cancel a user's subscription at the end of the billing cycle,
-        but keep it active until that date
-        
-        Args:
-            user_id: The user's ID
-            subscription_id: The subscription ID
-            
-        Returns:
-            dict: Cancellation result
-        """
-        logger.info(f"Scheduling cancellation of subscription {subscription_id} for user {user_id}")
-        
-        try:
-            conn = self.db.get_connection()
-            cursor = conn.cursor(dictionary=True)
-            
-            # Get subscription details
-            cursor.execute(f"""
-                SELECT * FROM {DB_TABLE_USER_SUBSCRIPTIONS}
-                WHERE id = %s AND user_id = %s
-            """, (subscription_id, user_id))
-            
-            subscription = cursor.fetchone()
-            
-            if not subscription:
-                cursor.close()
-                conn.close()
-                logger.error(f"Subscription not found or not owned by user: {subscription_id}")
-                raise ValueError(f"Subscription not found or not owned by user")
-            
-            # If it's a Razorpay subscription, schedule cancellation at the end of current cycle
-            if subscription.get('razorpay_subscription_id'):
-                try:
-                    # Use the Razorpay provider to cancel
-                    result = self.razorpay.cancel_subscription(
-                        subscription['razorpay_subscription_id'],
-                        cancel_at_cycle_end=True
-                    )
-                    
-                    if result.get('error'):
-                        logger.error(f"Error scheduling cancellation with Razorpay: {result.get('message')}")
-                        # Continue with local cancellation even if Razorpay fails
-                    else:
-                        logger.info(f"Razorpay subscription scheduled for cancellation: {subscription['razorpay_subscription_id']}")
-                        
-                except Exception as e:
-                    logger.error(f"Error scheduling cancellation with Razorpay: {str(e)}")
-                    # Continue with local cancellation even if Razorpay fails
-            
-            # Convert datetime to string to avoid JSON serialization issues
-            current_time_str = datetime.now().isoformat()
-            
-            # Update subscription metadata to indicate it's scheduled for cancellation,
-            # but keep status as "active"
-            cursor.execute(f"""
-                UPDATE {DB_TABLE_USER_SUBSCRIPTIONS}
-                SET metadata = JSON_MERGE_PATCH(IFNULL(metadata, '{{}}'), %s), 
-                    updated_at = NOW()
-                WHERE id = %s
-            """, (json.dumps({
-                'cancellation_scheduled': True,
-                'cancelled_at': current_time_str,
-            }), subscription_id))
-            
-            # Format end date for JSON if it exists
-            end_date_str = None
-            if subscription.get('current_period_end'):
-                if isinstance(subscription['current_period_end'], datetime):
-                    end_date_str = subscription['current_period_end'].isoformat()
-                else:
-                    end_date_str = str(subscription['current_period_end'])
-            
-            conn.commit()
-            cursor.close()
-            conn.close()
-            
-            # Return the updated subscription data
-            return {
-                "id": subscription_id,
-                "status": "active",  # Status remains active
-                "cancellation_scheduled": True,  # Add this flag instead
-                "end_date": end_date_str,
-                "message": "Subscription will remain active until the end of the current billing period"
-            }
-                
-        except Exception as e:
-            logger.error(f"Error scheduling subscription cancellation: {str(e)}")
-            logger.error(traceback.format_exc())
-            raise
+        # Try to get start date from payload
+        start_at = subscription_data.get('start_at')
+        if start_at:
+            try:
+                start_timestamp = int(start_at)
+                start_date = datetime.fromtimestamp(start_timestamp)
+            except (ValueError, TypeError):
+               logger.error(f"Invalid start_at value: {start_at}")
+               # Continue with current date as fallback
        
+        # Get plan details for interval
+        plan_details = self._get_plan_interval_details(plan_id)
+       
+       # Calculate period end based on plan
+        if plan_details:
+           period_end = calculate_period_end(
+               start_date,
+               plan_details['interval'],
+               plan_details['interval_count']
+           )
+        else:
+           # Default to 30 days if plan details not found
+           period_end = start_date + timedelta(days=30)
+       
+        return start_date, period_end
+
+    def _get_plan_interval_details(self, plan_id):
+       """Get plan interval details with isolated connection"""
+       try:
+           conn = self.db.get_connection()
+           cursor = conn.cursor(dictionary=True)
+           
+           cursor.execute(f"""
+               SELECT interval, interval_count
+               FROM {DB_TABLE_SUBSCRIPTION_PLANS}
+               WHERE id = %s
+           """, (plan_id,))
+           
+           plan_details = cursor.fetchone()
+           
+           cursor.close()
+           conn.close()
+           return plan_details
+           
+       except Exception as e:
+           logger.error(f"Error getting plan interval details: {str(e)}")
+           return None
+
+    def _activate_subscription_with_period(self, razorpay_subscription_id, start_date, period_end, subscription_data):
+       """Activate subscription with period dates"""
+       try:
+           conn = self.db.get_connection()
+           cursor = conn.cursor(dictionary=True)
+           
+           cursor.execute(f"""
+               UPDATE {DB_TABLE_USER_SUBSCRIPTIONS}
+               SET status = 'active', 
+                   current_period_start = %s,
+                   current_period_end = %s,
+                   updated_at = NOW(),
+                   metadata = JSON_MERGE_PATCH(IFNULL(metadata, '{{}}'), %s)
+               WHERE razorpay_subscription_id = %s
+           """, (start_date, period_end, json.dumps(subscription_data), razorpay_subscription_id))
+           
+           conn.commit()
+           cursor.close()
+           conn.close()
+           
+       except Exception as e:
+           logger.error(f"Error activating subscription with period: {str(e)}")
+           raise
+   
+    def _handle_razorpay_subscription_charged(self, payload):
+       """Handle subscription.charged webhook event - renews subscription and resets resources"""
+       try:
+           subscription_data = self._extract_charged_subscription_data(payload)
+           invoice_data = payload.get('payload', {}).get('invoice', {})
+           payment_data = payload.get('payload', {}).get('payment', {}).get('entity', {})
+           
+           # Get IDs
+           razorpay_subscription_id = subscription_data.get('id')
+           razorpay_invoice_id = payment_data.get('invoice_id') if payment_data else None
+           razorpay_payment_id = payment_data.get('id') if payment_data else None
+           
+           logger.info(f"Subscription Charged - Subscription ID: {razorpay_subscription_id}, Invoice ID: {razorpay_invoice_id}, Payment ID: {razorpay_payment_id}")
+           
+           if not razorpay_subscription_id:
+               logger.error("Missing subscription ID in charged webhook")
+           
+           subscription = self._get_subscription_by_razorpay_id(razorpay_subscription_id)
+           
+           if not subscription:
+               logger.error(f"Subscription not found for Razorpay ID: {razorpay_subscription_id}")
+               return {'status': 'error', 'message': 'Subscription not found'}
+           
+           # Get plan details
+           plan = self._get_plan(subscription['plan_id'])
+           
+           # Create new period dates
+           new_start = datetime.now()
+           new_end = calculate_period_end(
+               new_start,
+               plan['interval'] if plan else 'month',
+               plan['interval_count'] if plan else 1
+           )
+           
+           # Update subscription and record invoice in transaction
+           self._renew_subscription_with_invoice(
+               razorpay_subscription_id, 
+               new_start, 
+               new_end, 
+               subscription_data,
+               subscription,
+               razorpay_invoice_id,
+               razorpay_payment_id,
+               payment_data
+           )
+           
+           logger.info(f"Subscription charged processed: {razorpay_subscription_id}")
+           
+           return {
+               'status': 'success',
+               'message': 'Subscription renewed and usage reset',
+               'new_period_start': new_start.isoformat(),
+               'new_period_end': new_end.isoformat()
+           }
+           
+       except Exception as e:
+           logger.error(f"Error handling subscription charged: {str(e)}")
+           logger.error(traceback.format_exc())
+           return {'status': 'error', 'message': str(e)}
+
+    def _extract_charged_subscription_data(self, payload):
+       """Extract subscription data from charged webhook payload"""
+       subscription_data = payload.get('payload', {}).get('subscription', {})
+       
+       # Check if subscription data is nested inside an "entity" field
+       if 'entity' in subscription_data:
+           subscription_data = subscription_data.get('entity', {})
+       
+       return subscription_data
+
+    def _renew_subscription_with_invoice(self, razorpay_subscription_id, new_start, new_end, subscription_data, subscription, razorpay_invoice_id, razorpay_payment_id, payment_data):
+       """Renew subscription and record invoice in transaction"""
+       try:
+           conn = self.db.get_connection()
+           cursor = conn.cursor(dictionary=True)
+           
+           conn.begin()
+           
+           try:
+               # Update subscription status
+               cursor.execute(f"""
+                   UPDATE {DB_TABLE_USER_SUBSCRIPTIONS}
+                   SET status = 'active',
+                       current_period_start = %s,
+                       current_period_end = %s,
+                       updated_at = NOW(),
+                       metadata = JSON_MERGE_PATCH(IFNULL(metadata, '{{}}'), %s)
+                   WHERE razorpay_subscription_id = %s
+               """, (new_start, new_end, json.dumps({
+                   'subscription': subscription_data
+               }), razorpay_subscription_id))
+               
+               # If we have invoice details, record the invoice
+               if razorpay_invoice_id:
+                   invoice_id = generate_id('inv_')
+                   
+                   # Get invoice amount
+                   amount = payment_data.get('amount', 0)
+                   currency = payment_data.get('currency', 'INR')
+                   status = payment_data.get('status', 'pending')
+                   
+                   if status == 'captured':
+                       status = 'Paid'
+                   
+                   # Insert invoice record
+                   cursor.execute(f"""
+                       INSERT INTO subscription_invoices
+                       (id, subscription_id, user_id, razorpay_invoice_id, 
+                       amount, currency, status, payment_id, invoice_date, app_id)
+                       VALUES (%s, %s, %s, %s, %s, %s, %s, %s, NOW(), %s)
+                   """, (invoice_id, subscription['id'], subscription['user_id'], 
+                       razorpay_invoice_id, amount, currency, status, 
+                       razorpay_payment_id, subscription['app_id']))
+               
+               conn.commit()
+               cursor.close()
+               conn.close()
+               
+           except Exception as e:
+               conn.rollback()
+               cursor.close()
+               conn.close()
+               raise
+               
+       except Exception as e:
+           logger.error(f"Error renewing subscription with invoice: {str(e)}")
+           raise
+   
+    def _handle_razorpay_subscription_completed(self, payload):
+       """Handle subscription.completed webhook event"""
+       try:
+           subscription_data = self._extract_subscription_data(payload)
+           razorpay_subscription_id = subscription_data.get('id')
+           
+           if not razorpay_subscription_id:
+               logger.error("No subscription ID in completed webhook")
+               return {'status': 'error', 'message': 'Missing subscription ID'}
+           
+           subscription = self._get_subscription_by_razorpay_id(razorpay_subscription_id)
+           
+           if not subscription:
+               logger.error(f"Subscription not found for Razorpay ID: {razorpay_subscription_id}")
+               return {'status': 'error', 'message': 'Subscription not found'}
+           
+           self._update_subscription_status(razorpay_subscription_id, 'completed', subscription_data)
+           
+           logger.info(f"Subscription completed: {razorpay_subscription_id}")
+           return {'status': 'success', 'message': 'Subscription marked as completed'}
+           
+       except Exception as e:
+           logger.error(f"Error handling subscription completed: {str(e)}")
+           logger.error(traceback.format_exc())
+           return {'status': 'error', 'message': str(e)}
+   
+    def _handle_razorpay_subscription_cancelled(self, payload):
+       """Handle subscription.cancelled webhook event"""
+       try:
+           subscription_data = self._extract_subscription_data(payload)
+           razorpay_subscription_id = subscription_data.get('id')
+           
+           if not razorpay_subscription_id:
+               logger.error("No subscription ID in cancelled webhook")
+               return {'status': 'error', 'message': 'Missing subscription ID'}
+           
+           subscription = self._get_subscription_by_razorpay_id(razorpay_subscription_id)
+           
+           if not subscription:
+               logger.error(f"Subscription not found for Razorpay ID: {razorpay_subscription_id}")
+               return {'status': 'error', 'message': 'Subscription not found'}
+           
+           self._update_subscription_status(razorpay_subscription_id, 'cancelled', subscription_data)
+           
+           logger.info(f"Subscription cancelled: {razorpay_subscription_id}")
+           return {'status': 'success', 'message': 'Subscription marked as cancelled'}
+           
+       except Exception as e:
+           logger.error(f"Error handling subscription cancelled: {str(e)}")
+           logger.error(traceback.format_exc())
+           return {'status': 'error', 'message': str(e)}
+   
+    def cancel_subscription(self, user_id, subscription_id):
+       """
+       Cancel a user's subscription at the end of the billing cycle,
+       but keep it active until that date
+       
+       Args:
+           user_id: The user's ID
+           subscription_id: The subscription ID
+           
+       Returns:
+           dict: Cancellation result
+       """
+       logger.info(f"Scheduling cancellation of subscription {subscription_id} for user {user_id}")
+       
+       try:
+           # Phase 1: Get subscription data
+           subscription = self._get_subscription_for_cancellation(user_id, subscription_id)
+           
+           # Phase 2: Cancel with gateway (no DB connection open)
+           self._cancel_with_gateway(subscription)
+           
+           # Phase 3: Update database
+           return self._mark_subscription_cancelled(subscription_id, subscription)
+           
+       except Exception as e:
+           logger.error(f"Error scheduling subscription cancellation: {str(e)}")
+           logger.error(traceback.format_exc())
+           raise
+
+    def _get_subscription_for_cancellation(self, user_id, subscription_id):
+       """Get subscription for cancellation with isolated connection"""
+       try:
+           conn = self.db.get_connection()
+           cursor = conn.cursor(dictionary=True)
+           
+           cursor.execute(f"""
+               SELECT * FROM {DB_TABLE_USER_SUBSCRIPTIONS}
+               WHERE id = %s AND user_id = %s
+           """, (subscription_id, user_id))
+           
+           subscription = cursor.fetchone()
+           
+           cursor.close()
+           conn.close()
+           
+           if not subscription:
+               logger.error(f"Subscription not found or not owned by user: {subscription_id}")
+               raise ValueError(f"Subscription not found or not owned by user")
+           
+           return subscription
+           
+       except Exception as e:
+           logger.error(f"Error getting subscription for cancellation: {str(e)}")
+           raise
+
+    def _cancel_with_gateway(self, subscription):
+       """Cancel subscription with payment gateway"""
+       if subscription.get('razorpay_subscription_id'):
+           try:
+               # Use the Razorpay provider to cancel
+               result = self.razorpay.cancel_subscription(
+                   subscription['razorpay_subscription_id'],
+                   cancel_at_cycle_end=True
+               )
+               
+               if result.get('error'):
+                   logger.error(f"Error scheduling cancellation with Razorpay: {result.get('message')}")
+                   # Continue with local cancellation even if Razorpay fails
+               else:
+                   logger.info(f"Razorpay subscription scheduled for cancellation: {subscription['razorpay_subscription_id']}")
+                   
+           except Exception as e:
+               logger.error(f"Error scheduling cancellation with Razorpay: {str(e)}")
+               # Continue with local cancellation even if Razorpay fails
+
+    def _mark_subscription_cancelled(self, subscription_id, subscription):
+       """Mark subscription as cancelled in database"""
+       try:
+           conn = self.db.get_connection()
+           cursor = conn.cursor(dictionary=True)
+           
+           # Convert datetime to string to avoid JSON serialization issues
+           current_time_str = datetime.now().isoformat()
+           
+           # Update subscription metadata to indicate it's scheduled for cancellation,
+           # but keep status as "active"
+           cursor.execute(f"""
+               UPDATE {DB_TABLE_USER_SUBSCRIPTIONS}
+               SET metadata = JSON_MERGE_PATCH(IFNULL(metadata, '{{}}'), %s), 
+                   updated_at = NOW()
+               WHERE id = %s
+           """, (json.dumps({
+               'cancellation_scheduled': True,
+               'cancelled_at': current_time_str,
+           }), subscription_id))
+           
+           conn.commit()
+           cursor.close()
+           conn.close()
+           
+           # Format end date for JSON if it exists
+           end_date_str = None
+           if subscription.get('current_period_end'):
+               if isinstance(subscription['current_period_end'], datetime):
+                   end_date_str = subscription['current_period_end'].isoformat()
+               else:
+                   end_date_str = str(subscription['current_period_end'])
+           
+           # Return the updated subscription data
+           return {
+               "id": subscription_id,
+               "status": "active",  # Status remains active
+               "cancellation_scheduled": True,  # Add this flag instead
+               "end_date": end_date_str,
+               "message": "Subscription will remain active until the end of the current billing period"
+           }
+           
+       except Exception as e:
+           logger.error(f"Error marking subscription cancelled: {str(e)}")
+           raise
+      
     def get_billing_history(self, user_id, app_id):
-        """
-        Get billing history for a user
-        
-        Args:
-            user_id: The user's ID
-            app_id: The application ID
-            
-        Returns:
-            list: Billing history
-        """
-        logger.info(f"Getting billing history for user {user_id}, app {app_id}")
-        
-        try:
-            conn = self.db.get_connection()
-            cursor = conn.cursor(dictionary=True)
-            
-            cursor.execute("""
-                SELECT i.* 
-                FROM subscription_invoices i
-                JOIN user_subscriptions s ON i.subscription_id = s.id
-                WHERE i.user_id = %s AND s.app_id = %s
-                ORDER BY i.invoice_date DESC
-            """, (user_id, app_id))
-            
-            invoices = cursor.fetchall()
-            cursor.close()
-            conn.close()
-            
-            return invoices
-            
-        except Exception as e:
-            logger.error(f"Error getting billing history: {str(e)}")
-            logger.error(traceback.format_exc())
-            return []
-    
+       """
+       Get billing history for a user
+       
+       Args:
+           user_id: The user's ID
+           app_id: The application ID
+           
+       Returns:
+           list: Billing history
+       """
+       logger.info(f"Getting billing history for user {user_id}, app {app_id}")
+       
+       try:
+           conn = self.db.get_connection()
+           cursor = conn.cursor(dictionary=True)
+           
+           cursor.execute("""
+               SELECT i.* 
+               FROM subscription_invoices i
+               JOIN user_subscriptions s ON i.subscription_id = s.id
+               WHERE i.user_id = %s AND s.app_id = %s
+               ORDER BY i.invoice_date DESC
+           """, (user_id, app_id))
+           
+           invoices = cursor.fetchall()
+           cursor.close()
+           conn.close()
+           
+           return invoices
+           
+       except Exception as e:
+           logger.error(f"Error getting billing history: {str(e)}")
+           logger.error(traceback.format_exc())
+           return []
+   
     def activate_subscription(self, user_id, subscription_id, payment_id=None):
-        """
-        Manually activate a subscription (used for verification endpoints)
-        
-        Args:
-            user_id: The user's ID
-            subscription_id: The Razorpay subscription ID
-            payment_id: Optional payment ID
-            
-        Returns:
-            dict: Activation result
-        """
-        logger.info(f"Manually activating subscription {subscription_id} for user {user_id}")
-        
-        try:
-            conn = self.db.get_connection()
-            cursor = conn.cursor(dictionary=True)
-            
-            # Get the subscription record
-            cursor.execute(f"""
-                SELECT * FROM {DB_TABLE_USER_SUBSCRIPTIONS}
-                WHERE razorpay_subscription_id = %s
-            """, (subscription_id,))
-            
-            subscription = cursor.fetchone()
-            
-            if not subscription:
-                logger.error(f"Subscription not found: {subscription_id}")
-                return {'status': 'error', 'message': 'Subscription not found'}
-            
-            # Get plan details
-            cursor.execute(f"""
-                SELECT * FROM {DB_TABLE_SUBSCRIPTION_PLANS}
-                WHERE id = %s
-            """, (subscription['plan_id'],))
-            
-            plan = cursor.fetchone()
-            
-            if not plan:
-                logger.error(f"Plan not found for subscription {subscription['id']}")
-                return {'status': 'error', 'message': 'Plan not found'}
-            
-            # Calculate subscription period
-            start_date = datetime.now()
-            period_end = calculate_period_end(start_date, plan['interval'], plan['interval_count'])
-            
-            # Update subscription status
-            cursor.execute(f"""
-                UPDATE {DB_TABLE_USER_SUBSCRIPTIONS}
-                SET status = 'active', 
-                    current_period_start = %s,
-                    current_period_end = %s,
-                    updated_at = NOW()
-                WHERE razorpay_subscription_id = %s
-            """, (start_date, period_end, subscription_id))
-            
-            
-            # Record payment if provided
-            if payment_id:
-                invoice_id = generate_id('inv_')
-                
-                cursor.execute("""
-                    INSERT INTO subscription_invoices
-                    (id, subscription_id, user_id, razorpay_invoice_id, amount, status, payment_id, app_id, invoice_date, paid_at)
-                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, NOW(), NOW())
-                """, (
-                    invoice_id, 
-                    subscription['id'],
-                    user_id,
-                    'manual_activation',
-                    plan['amount'],
-                    'paid',
-                    payment_id,
-                    subscription['app_id']
-                ))
-            
-            # Log the manual activation
-            self.db.log_event(
-                'manual_activation',
-                subscription_id,
-                user_id,
-                {'payment_id': payment_id},
-                provider='razorpay',
-                processed=True
-            )
-            
-            conn.commit()
-            cursor.close()
-            conn.close()
-            
-            logger.info(f"Subscription {subscription_id} manually activated")
-            return {'status': 'success', 'message': 'Subscription activated'}
-            
-        except Exception as e:
-            logger.error(f"Error manually activating subscription: {str(e)}")
-            logger.error(traceback.format_exc())
-            return {'status': 'error', 'message': str(e)}
-        
-    # service.py - Updated resource tracking mechanism
+       """
+       Manually activate a subscription (used for verification endpoints)
+       
+       Args:
+           user_id: The user's ID
+           subscription_id: The Razorpay subscription ID
+           payment_id: Optional payment ID
+           
+       Returns:
+           dict: Activation result
+       """
+       logger.info(f"Manually activating subscription {subscription_id} for user {user_id}")
+       
+       try:
+           subscription = self._get_subscription_by_razorpay_id(subscription_id)
+           if not subscription:
+               return {'status': 'error', 'message': 'Subscription not found'}
+           
+           plan = self._get_plan(subscription['plan_id'])
+           if not plan:
+               return {'status': 'error', 'message': 'Plan not found'}
+           
+           return self._activate_subscription_transaction(subscription, plan, payment_id)
+           
+       except Exception as e:
+           logger.error(f"Error manually activating subscription: {str(e)}")
+           logger.error(traceback.format_exc())
+           return {'status': 'error', 'message': str(e)}
+
+    def _activate_subscription_transaction(self, subscription, plan, payment_id):
+       """Activate subscription in transaction"""
+       try:
+           conn = self.db.get_connection()
+           cursor = conn.cursor(dictionary=True)
+           
+           conn.begin()
+           
+           try:
+               # Calculate subscription period
+               start_date = datetime.now()
+               period_end = calculate_period_end(start_date, plan['interval'], plan['interval_count'])
+               
+               # Update subscription status
+               cursor.execute(f"""
+                   UPDATE {DB_TABLE_USER_SUBSCRIPTIONS}
+                   SET status = 'active', 
+                       current_period_start = %s,
+                       current_period_end = %s,
+                       updated_at = NOW()
+                   WHERE razorpay_subscription_id = %s
+               """, (start_date, period_end, subscription['razorpay_subscription_id']))
+               
+               # Record payment if provided
+               if payment_id:
+                   invoice_id = generate_id('inv_')
+                   
+                   cursor.execute("""
+                       INSERT INTO subscription_invoices
+                       (id, subscription_id, user_id, razorpay_invoice_id, amount, status, payment_id, app_id, invoice_date, paid_at)
+                       VALUES (%s, %s, %s, %s, %s, %s, %s, %s, NOW(), NOW())
+                   """, (
+                       invoice_id, 
+                       subscription['id'],
+                       subscription['user_id'],
+                       'manual_activation',
+                       plan['amount'],
+                       'paid',
+                       payment_id,
+                       subscription['app_id']
+                   ))
+               
+               # Log the manual activation
+               self.db.log_event(
+                   'manual_activation',
+                   subscription['razorpay_subscription_id'],
+                   subscription['user_id'],
+                   {'payment_id': payment_id},
+                   provider='razorpay',
+                   processed=True
+               )
+               
+               conn.commit()
+               cursor.close()
+               conn.close()
+               
+               logger.info(f"Subscription {subscription['razorpay_subscription_id']} manually activated")
+               return {'status': 'success', 'message': 'Subscription activated'}
+               
+           except Exception as e:
+               conn.rollback()
+               cursor.close()
+               conn.close()
+               raise
+               
+       except Exception as e:
+           logger.error(f"Error in activation transaction: {str(e)}")
+           raise
+       
+   # service.py - Updated resource tracking mechanism
 
     def get_resource_limits(self, user_id, app_id):
-        """
-        Get resource limits for a user based on their subscription plan
-        
-        Args:
-            user_id: The user's ID
-            app_id: The application ID
-            
-        Returns:
-            dict: Resource limits
-        """
-        logger.info(f"Getting resource limits for user {user_id}, app {app_id}")
-        
-        try:
-            # Get the user's active subscription
-            subscription = self.get_user_subscription(user_id, app_id)
-            
-            if not subscription:
-                # Default limits for free plan
-                if app_id == 'marketfit':
-                    return {
-                        'document_pages': 50,
-                        'perplexity_requests': 20
-                    }
-                else:  # saleswit
-                    return {
-                        'requests': 20  # SalesWit only has request parameter
-                    }
-            
-            # Get limits from subscription features
-            features = subscription.get('features', {})
-            if isinstance(features, str):
-                import json
-                features = json.loads(features)
-            
-            # Return appropriate limits based on app
-            if app_id == 'marketfit':
-                return {
-                    'document_pages': features.get('document_pages', 50),
-                    'perplexity_requests': features.get('perplexity_requests', 20)
-                }
-            else:  # saleswit
-                return {
-                    'requests': features.get('requests', 20)  # SalesWit only has request parameter
-                }
-                
-        except Exception as e:
-            logger.error(f"Error getting resource limits: {str(e)}")
-            logger.error(traceback.format_exc())
-            # Return default limits on error
-            if app_id == 'marketfit':
-                return {
-                    'document_pages': 50,
-                    'perplexity_requests': 20
-                }
-            else:  # saleswit
-                return {
-                    'requests': 20  # SalesWit only has request parameter
-                }
+       """
+       Get resource limits for a user based on their subscription plan
+       
+       Args:
+           user_id: The user's ID
+           app_id: The application ID
+           
+       Returns:
+           dict: Resource limits
+       """
+       logger.info(f"Getting resource limits for user {user_id}, app {app_id}")
+       
+       try:
+           # Get the user's active subscription
+           subscription = self.get_user_subscription(user_id, app_id)
+           
+           if not subscription:
+               # Default limits for free plan
+               if app_id == 'marketfit':
+                   return {
+                       'document_pages': 50,
+                       'perplexity_requests': 20
+                   }
+               else:  # saleswit
+                   return {
+                       'requests': 20  # SalesWit only has request parameter
+                   }
+           
+           # Get limits from subscription features
+           features = subscription.get('features', {})
+           if isinstance(features, str):
+               import json
+               features = json.loads(features)
+           
+           # Return appropriate limits based on app
+           if app_id == 'marketfit':
+               return {
+                   'document_pages': features.get('document_pages', 50),
+                   'perplexity_requests': features.get('perplexity_requests', 20)
+               }
+           else:  # saleswit
+               return {
+                   'requests': features.get('requests', 20)  # SalesWit only has request parameter
+               }
+               
+       except Exception as e:
+           logger.error(f"Error getting resource limits: {str(e)}")
+           logger.error(traceback.format_exc())
+           # Return default limits on error
+           if app_id == 'marketfit':
+               return {
+                   'document_pages': 50,
+                   'perplexity_requests': 20
+               }
+           else:  # saleswit
+               return {
+                   'requests': 20  # SalesWit only has request parameter
+               }
 
-    # service.py - Updated initialize_resource_quota function
+   # service.py - Updated initialize_resource_quota function
 
     def initialize_resource_quota(self, user_id, subscription_id, app_id):
-        """
-        Initialize or reset resource quota for a subscription period
-        
-        Args:
-            user_id: The user's ID
-            subscription_id: The subscription ID
-            app_id: The application ID
-            
-        Returns:
-            bool: Success status
-        """
-        logger.info(f"Initializing resource quota for user {user_id}, subscription {subscription_id}")
-        
-        try:
-            conn = self.db.get_connection()
-            cursor = conn.cursor(dictionary=True)
-            
-            # Get subscription details to get billing period dates and plan features
-            cursor.execute(f"""
-                SELECT us.*, sp.features, sp.app_id 
-                FROM {DB_TABLE_USER_SUBSCRIPTIONS} us
-                JOIN {DB_TABLE_SUBSCRIPTION_PLANS} sp ON us.plan_id = sp.id
-                WHERE us.id = %s
-            """, (subscription_id,))
-            
-            subscription = cursor.fetchone()
-            
-            if not subscription:
-                logger.error(f"Subscription {subscription_id} not found")
-                cursor.close()
-                conn.close()
-                return False
-            
-            # Parse features
-            features_str = subscription.get('features', '{}')
-            if isinstance(features_str, str):
-                try:
-                    features = json.loads(features_str)
-                except json.JSONDecodeError:
-                    features = {}
-            else:
-                features = features_str or {}
-            
-            # Set the quota based on app
-            if app_id == 'marketfit':
-                document_pages_quota = features.get('document_pages', 50)
-                perplexity_requests_quota = features.get('perplexity_requests', 20)
-                requests_quota = 0  # Not used for MarketFit
-            else:  # saleswit
-                document_pages_quota = 0  # Not used for SalesWit
-                perplexity_requests_quota = 0  # Not used for SalesWit
-                requests_quota = features.get('requests', 20)
-            
-            # Log quota values for debugging
-            logger.info(f"Setting quota for {app_id}: doc_pages={document_pages_quota}, perplexity={perplexity_requests_quota}, requests={requests_quota}")
-            
-            # Check if there's an existing quota record for this subscription
-            cursor.execute(f"""
-                SELECT id FROM {DB_TABLE_RESOURCE_USAGE}
-                WHERE user_id = %s AND subscription_id = %s AND app_id = %s
-                ORDER BY created_at DESC LIMIT 1
-            """, (user_id, subscription_id, app_id))
-            
-            quota_record = cursor.fetchone()
-            
-            if quota_record:
-                # Update existing record - reset quotas
-                cursor.execute(f"""
-                    UPDATE {DB_TABLE_RESOURCE_USAGE}
-                    SET document_pages_quota = %s,
-                        perplexity_requests_quota = %s,
-                        requests_quota = %s,
-                        updated_at = NOW()
-                    WHERE id = %s
-                """, (
-                    document_pages_quota,
-                    perplexity_requests_quota,
-                    requests_quota,
-                    quota_record['id']
-                ))
-                logger.info(f"Updated existing quota record {quota_record['id']}")
-            else:
-                # Create a new record
-                cursor.execute(f"""
-                    INSERT INTO {DB_TABLE_RESOURCE_USAGE}
-                    (user_id, subscription_id, app_id, billing_period_start, billing_period_end,
-                    document_pages_quota, perplexity_requests_quota, requests_quota)
-                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
-                """, (
-                    user_id,
-                    subscription_id,
-                    app_id,
-                    subscription.get('current_period_start') or datetime.now(),
-                    subscription.get('current_period_end') or (datetime.now() + timedelta(days=30)),
-                    document_pages_quota,
-                    perplexity_requests_quota,
-                    requests_quota
-                ))
-                logger.info(f"Created new quota record for subscription {subscription_id}")
-            
-            conn.commit()
-            cursor.close()
-            conn.close()
-            
-            return True
-            
-        except Exception as e:
-            logger.error(f"Error initializing resource quota: {str(e)}")
-            logger.error(traceback.format_exc())
-            return False
+       """
+       Initialize or reset resource quota for a subscription period
+       
+       Args:
+           user_id: The user's ID
+           subscription_id: The subscription ID
+           app_id: The application ID
+           
+       Returns:
+           bool: Success status
+       """
+       logger.info(f"Initializing resource quota for user {user_id}, subscription {subscription_id}")
+       
+       try:
+           subscription_details = self._get_subscription_with_features(subscription_id)
+           
+           if not subscription_details:
+               logger.error(f"Subscription {subscription_id} not found")
+               return False
+           
+           # Parse features
+           features = self._parse_subscription_features(subscription_details.get('features', '{}'))
+           
+           # Set quota based on app
+           quota_values = self._calculate_quota_values(app_id, features)
+           
+           # Create or update quota record
+           return self._save_quota_record(user_id, subscription_id, app_id, subscription_details, quota_values)
+           
+       except Exception as e:
+           logger.error(f"Error initializing resource quota: {str(e)}")
+           logger.error(traceback.format_exc())
+           return False
 
-    # service.py - Updated get_resource_quota function
-    # service.py - Enhanced logging for get_resource_quota
+    def _get_subscription_with_features(self, subscription_id):
+       """Get subscription with features using isolated connection"""
+       try:
+           conn = self.db.get_connection()
+           cursor = conn.cursor(dictionary=True)
+           
+           cursor.execute(f"""
+               SELECT us.*, sp.features, sp.app_id 
+               FROM {DB_TABLE_USER_SUBSCRIPTIONS} us
+               JOIN {DB_TABLE_SUBSCRIPTION_PLANS} sp ON us.plan_id = sp.id
+               WHERE us.id = %s
+           """, (subscription_id,))
+           
+           subscription = cursor.fetchone()
+           
+           cursor.close()
+           conn.close()
+           return subscription
+           
+       except Exception as e:
+           logger.error(f"Error getting subscription with features: {str(e)}")
+           raise
+
+    def _parse_subscription_features(self, features_str):
+       """Parse subscription features JSON"""
+       if isinstance(features_str, str):
+           try:
+               return json.loads(features_str)
+           except json.JSONDecodeError:
+               return {}
+       return features_str or {}
+
+    def _calculate_quota_values(self, app_id, features):
+       """Calculate quota values based on app and features"""
+       if app_id == 'marketfit':
+           return {
+               'document_pages_quota': features.get('document_pages', 50),
+               'perplexity_requests_quota': features.get('perplexity_requests', 20),
+               'requests_quota': 0
+           }
+       else:  # saleswit
+           return {
+               'document_pages_quota': 0,
+               'perplexity_requests_quota': 0,
+               'requests_quota': features.get('requests', 20)
+           }
+
+    def _save_quota_record(self, user_id, subscription_id, app_id, subscription_details, quota_values):
+       """Save or update quota record"""
+       try:
+           conn = self.db.get_connection()
+           cursor = conn.cursor(dictionary=True)
+           
+           # Check if existing record exists
+           cursor.execute(f"""
+               SELECT id FROM {DB_TABLE_RESOURCE_USAGE}
+               WHERE user_id = %s AND subscription_id = %s AND app_id = %s
+               ORDER BY created_at DESC LIMIT 1
+           """, (user_id, subscription_id, app_id))
+           
+           quota_record = cursor.fetchone()
+           
+           if quota_record:
+               # Update existing record
+               cursor.execute(f"""
+                   UPDATE {DB_TABLE_RESOURCE_USAGE}
+                   SET document_pages_quota = %s,
+                       perplexity_requests_quota = %s,
+                       requests_quota = %s,
+                       updated_at = NOW()
+                   WHERE id = %s
+               """, (
+                   quota_values['document_pages_quota'],
+                   quota_values['perplexity_requests_quota'],
+                   quota_values['requests_quota'],
+                   quota_record['id']
+               ))
+               logger.info(f"Updated existing quota record {quota_record['id']}")
+           else:
+               # Create new record
+               cursor.execute(f"""
+                   INSERT INTO {DB_TABLE_RESOURCE_USAGE}
+                   (user_id, subscription_id, app_id, billing_period_start, billing_period_end,
+                   document_pages_quota, perplexity_requests_quota, requests_quota)
+                   VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+               """, (
+                   user_id,
+                   subscription_id,
+                   app_id,
+                   subscription_details.get('current_period_start') or datetime.now(),
+                   subscription_details.get('current_period_end') or (datetime.now() + timedelta(days=30)),
+                   quota_values['document_pages_quota'],
+                   quota_values['perplexity_requests_quota'],
+                   quota_values['requests_quota']
+               ))
+               logger.info(f"Created new quota record for subscription {subscription_id}")
+           
+           conn.commit()
+           cursor.close()
+           conn.close()
+           
+           return True
+           
+       except Exception as e:
+           logger.error(f"Error saving quota record: {str(e)}")
+           raise
 
     def get_resource_quota(self, user_id, app_id):
-        """Get remaining resource quota for a user in the current billing period."""
-        logger.info(f"[AZURE DEBUG] Starting get_resource_quota for user {user_id}, app {app_id}")
-        
-        try:
-            conn = self.db.get_connection()
-            cursor = conn.cursor(dictionary=True)
-            
-            logger.info(f"[AZURE DEBUG] Database connection established for quota query")
-            
-            # Initialize quota object based on app
-            if app_id == 'marketfit':
-                quota = {
-                    'document_pages': 0,
-                    'perplexity_requests': 0
-                }
-            else:  # saleswit
-                quota = {
-                    'requests': 0
-                }
-            
-            logger.info(f"[AZURE DEBUG] Initial quota object: {quota}")
-            
-            # Get the user's active subscription
-            subscription_query = f"""
-                SELECT id FROM {DB_TABLE_USER_SUBSCRIPTIONS}
-                WHERE user_id = %s AND app_id = %s AND status = 'active'
-                ORDER BY current_period_end DESC LIMIT 1
-            """
-            logger.info(f"[AZURE DEBUG] Executing subscription query: {subscription_query}")
-            
-            cursor.execute(subscription_query, (user_id, app_id))
-            subscription_result = cursor.fetchone()
-            
-            if not subscription_result:
-                logger.warning(f"[AZURE DEBUG] No active subscription found for user {user_id}")
-                cursor.close()
-                conn.close()
-                return quota
-            
-            subscription_id = subscription_result['id']
-            logger.info(f"[AZURE DEBUG] Found subscription: {subscription_id}")
-            
-            # Get quota from the tracking table for the current billing period
-            quota_query = f"""
-                SELECT * FROM {DB_TABLE_RESOURCE_USAGE}
-                WHERE user_id = %s AND subscription_id = %s AND app_id = %s
-                ORDER BY created_at DESC LIMIT 1
-            """
-            logger.info(f"[AZURE DEBUG] Executing quota query: {quota_query}")
-            
-            cursor.execute(quota_query, (user_id, subscription_id, app_id))
-            quota_result = cursor.fetchone()
-            
-            if quota_result:
-                logger.info(f"[AZURE DEBUG] Found quota record: {quota_result['id']}")
-                # Log all quota fields for debugging
-                for key, value in quota_result.items():
-                    logger.info(f"[AZURE DEBUG] Quota field {key}: {value}")
-                    
-                # Update quota with remaining values based on app
-                if app_id == 'marketfit':
-                    quota['document_pages'] = quota_result['document_pages_quota']
-                    quota['perplexity_requests'] = quota_result['perplexity_requests_quota']
-                else:  # saleswit
-                    quota['requests'] = quota_result['requests_quota']
-            else:
-                logger.warning(f"[AZURE DEBUG] No quota record found for user {user_id}, subscription {subscription_id}")
-            
-            cursor.close()
-            conn.close()
-            
-            logger.info(f"[AZURE DEBUG] Final quota result: {quota}")
-            return quota
-            
-        except Exception as e:
-            logger.error(f"[AZURE DEBUG] Error in get_resource_quota: {str(e)}")
-            logger.error(traceback.format_exc())
-            # Return empty quota on error
-            if app_id == 'marketfit':
-                return {
-                    'document_pages': 0,
-                    'perplexity_requests': 0
-                }
-            else:  # saleswit
-                return {
-                    'requests': 0
-                }
+       """Get remaining resource quota for a user in the current billing period."""
+       logger.info(f"[AZURE DEBUG] Starting get_resource_quota for user {user_id}, app {app_id}")
+       
+       try:
+           # Initialize quota object based on app
+           quota = self._initialize_quota_object(app_id)
+           
+           # Get active subscription
+           subscription_id = self._get_active_subscription_id(user_id, app_id)
+           if not subscription_id:
+               logger.warning(f"[AZURE DEBUG] No active subscription found for user {user_id}")
+               return quota
+           
+           # Get quota record
+           quota_result = self._get_quota_record(user_id, subscription_id, app_id)
+           if quota_result:
+               quota = self._update_quota_from_record(app_id, quota, quota_result)
+           
+           logger.info(f"[AZURE DEBUG] Final quota result: {quota}")
+           return quota
+           
+       except Exception as e:
+           logger.error(f"[AZURE DEBUG] Error in get_resource_quota: {str(e)}")
+           logger.error(traceback.format_exc())
+           return self._initialize_quota_object(app_id)
 
+    def _initialize_quota_object(self, app_id):
+       """Initialize quota object based on app"""
+       if app_id == 'marketfit':
+           return {
+               'document_pages': 0,
+               'perplexity_requests': 0
+           }
+       else:  # saleswit
+           return {
+               'requests': 0
+           }
+
+    def _get_active_subscription_id(self, user_id, app_id):
+       """Get active subscription ID with isolated connection"""
+       try:
+           conn = self.db.get_connection()
+           cursor = conn.cursor(dictionary=True)
+           
+           cursor.execute(f"""
+               SELECT id FROM {DB_TABLE_USER_SUBSCRIPTIONS}
+               WHERE user_id = %s AND app_id = %s AND status = 'active'
+               ORDER BY current_period_end DESC LIMIT 1
+           """, (user_id, app_id))
+           
+           subscription_result = cursor.fetchone()
+           
+           cursor.close()
+           conn.close()
+           
+           return subscription_result['id'] if subscription_result else None
+           
+       except Exception as e:
+           logger.error(f"Error getting active subscription ID: {str(e)}")
+           return None
+
+    def _get_quota_record(self, user_id, subscription_id, app_id):
+       """Get quota record with isolated connection"""
+       try:
+           conn = self.db.get_connection()
+           cursor = conn.cursor(dictionary=True)
+           
+           cursor.execute(f"""
+               SELECT * FROM {DB_TABLE_RESOURCE_USAGE}
+               WHERE user_id = %s AND subscription_id = %s AND app_id = %s
+               ORDER BY created_at DESC LIMIT 1
+           """, (user_id, subscription_id, app_id))
+           
+           quota_result = cursor.fetchone()
+           
+           cursor.close()
+           conn.close()
+           
+           return quota_result
+           
+       except Exception as e:
+           logger.error(f"Error getting quota record: {str(e)}")
+           return None
+
+    def _update_quota_from_record(self, app_id, quota, quota_result):
+       """Update quota object from database record"""
+       if app_id == 'marketfit':
+           quota['document_pages'] = quota_result['document_pages_quota']
+           quota['perplexity_requests'] = quota_result['perplexity_requests_quota']
+       else:  # saleswit
+           quota['requests'] = quota_result['requests_quota']
+       
+       return quota
 
     def check_resource_availability(self, user_id, app_id, resource_type, count=1):
-        """Check if user has enough resources available."""
-        logger.info(f"[AZURE DEBUG] Starting check_resource_availability for user {user_id}, app {app_id}, resource_type {resource_type}, count {count}")
-        
-        try:
-            # Ensure user has a resource quota entry
-            logger.info(f"[AZURE DEBUG] Ensuring user {user_id} has resource quota")
-            ensure_result = self.ensure_user_has_resource_quota(user_id, app_id)
-            logger.info(f"[AZURE DEBUG] Ensure result: {ensure_result}")
-            
-            # Get the user's resource quota
-            logger.info(f"[AZURE DEBUG] Getting resource quota for user {user_id}")
-            quota = self.get_resource_quota(user_id, app_id)
-            
-            logger.info(f"[AZURE DEBUG] Current quota: {quota}")
-            logger.info(f"[AZURE DEBUG] Checking if {count} {resource_type} is available")
-            
-            # Check if the quota is enough for the requested count
-            if resource_type in quota:
-                is_available = quota[resource_type] >= count
-                logger.info(f"[AZURE DEBUG] Resource {resource_type} availability: {is_available} (need {count}, have {quota[resource_type]})")
-                return is_available
-            
-            # If resource type not found in quota, assume unavailable
-            logger.warning(f"[AZURE DEBUG] Resource type {resource_type} not found in quota for user {user_id}")
-            return False
-                
-        except Exception as e:
-            logger.error(f"[AZURE DEBUG] Error in check_resource_availability: {str(e)}")
-            logger.error(traceback.format_exc())
-            # Default to not available on error
-            return False
-        
-    # service.py - Enhanced logging for decrement_resource_quota
+       """Check if user has enough resources available."""
+       logger.info(f"[AZURE DEBUG] Starting check_resource_availability for user {user_id}, app {app_id}, resource_type {resource_type}, count {count}")
+       
+       try:
+           # Ensure user has a resource quota entry
+           ensure_result = self.ensure_user_has_resource_quota(user_id, app_id)
+           logger.info(f"[AZURE DEBUG] Ensure result: {ensure_result}")
+           
+           # Get the user's resource quota
+           quota = self.get_resource_quota(user_id, app_id)
+           
+           logger.info(f"[AZURE DEBUG] Current quota: {quota}")
+           logger.info(f"[AZURE DEBUG] Checking if {count} {resource_type} is available")
+           
+           # Check if the quota is enough for the requested count
+           if resource_type in quota:
+               is_available = quota[resource_type] >= count
+               logger.info(f"[AZURE DEBUG] Resource {resource_type} availability: {is_available} (need {count}, have {quota[resource_type]})")
+               return is_available
+           
+           # If resource type not found in quota, assume unavailable
+           logger.warning(f"[AZURE DEBUG] Resource type {resource_type} not found in quota for user {user_id}")
+           return False
+               
+       except Exception as e:
+           logger.error(f"[AZURE DEBUG] Error in check_resource_availability: {str(e)}")
+           logger.error(traceback.format_exc())
+           # Default to not available on error
+           return False
 
     def decrement_resource_quota(self, user_id, app_id, resource_type, count=1):
-        """Decrement resource quota for a user."""
-        logger.info(f"[AZURE DEBUG] Starting decrement_resource_quota for user {user_id}, app {app_id}, resource_type {resource_type}, count {count}")
-        
-        try:
-            # Check if resource is available
-            logger.info(f"[AZURE DEBUG] Checking if resource {resource_type} is available")
-            if not self.check_resource_availability(user_id, app_id, resource_type, count):
-                logger.warning(f"[AZURE DEBUG] Resource {resource_type} not available for user {user_id}")
-                return False
-            
-            logger.info(f"[AZURE DEBUG] Resource {resource_type} is available, proceeding with decrement")
-            
-            conn = self.db.get_connection()
-            cursor = conn.cursor(dictionary=True)
-            
-            # Get the user's active subscription
-            subscription_query = f"""
-                SELECT id FROM {DB_TABLE_USER_SUBSCRIPTIONS}
-                WHERE user_id = %s AND app_id = %s AND status = 'active'
-                ORDER BY current_period_end DESC LIMIT 1
-            """
-            logger.info(f"[AZURE DEBUG] Executing subscription query: {subscription_query}")
-            
-            cursor.execute(subscription_query, (user_id, app_id))
-            subscription = cursor.fetchone()
-            
-            if not subscription:
-                logger.warning(f"[AZURE DEBUG] No active subscription found for user {user_id}")
-                cursor.close()
-                conn.close()
-                return False
-            
-            logger.info(f"[AZURE DEBUG] Found subscription: {subscription['id']}")
-            
-            # Get the user's resource quota record
-            quota_query = f"""
-                SELECT id FROM {DB_TABLE_RESOURCE_USAGE}
-                WHERE user_id = %s AND subscription_id = %s AND app_id = %s
-                ORDER BY created_at DESC LIMIT 1
-            """
-            logger.info(f"[AZURE DEBUG] Executing quota query: {quota_query}")
-            
-            cursor.execute(quota_query, (user_id, subscription['id'], app_id))
-            quota_record = cursor.fetchone()
-            
-            if not quota_record:
-                logger.warning(f"[AZURE DEBUG] No quota record found for user {user_id}")
-                cursor.close()
-                conn.close()
-                
-                # Initialize quota first
-                logger.info(f"[AZURE DEBUG] Initializing resource quota before decrement")
-                init_result = self.initialize_resource_quota(user_id, subscription['id'], app_id)
-                logger.info(f"[AZURE DEBUG] Initialization result: {init_result}")
-                
-                # Try again with initialized quota
-                return self.decrement_resource_quota(user_id, app_id, resource_type, count)
-            
-            logger.info(f"[AZURE DEBUG] Found quota record: {quota_record['id']}")
-            
-            # Update the quota by decrementing the specified resource
-            column_name = f"{resource_type}_quota"
-            update_query = f"""
-                UPDATE {DB_TABLE_RESOURCE_USAGE}
-                SET {column_name} = GREATEST(0, {column_name} - %s),
-                    updated_at = NOW()
-                WHERE id = %s
-            """
-            logger.info(f"[AZURE DEBUG] Executing update query: {update_query}")
-            
-            try:
-                cursor.execute(update_query, (count, quota_record['id']))
-                conn.commit()
-                logger.info(f"[AZURE DEBUG] Successfully decremented {count} {resource_type} for user {user_id}")
-            except Exception as update_err:
-                logger.error(f"[AZURE DEBUG] Error updating quota: {str(update_err)}")
-                logger.error(traceback.format_exc())
-                conn.rollback()
-                cursor.close()
-                conn.close()
-                return False
-            
-            cursor.close()
-            conn.close()
-            
-            return True
-            
-        except Exception as e:
-            logger.error(f"[AZURE DEBUG] Error in decrement_resource_quota: {str(e)}")
-            logger.error(traceback.format_exc())
-            return False
+       """Decrement resource quota for a user."""
+       logger.info(f"[AZURE DEBUG] Starting decrement_resource_quota for user {user_id}, app {app_id}, resource_type {resource_type}, count {count}")
+       
+       try:
+           # Check if resource is available
+           if not self.check_resource_availability(user_id, app_id, resource_type, count):
+               logger.warning(f"[AZURE DEBUG] Resource {resource_type} not available for user {user_id}")
+               return False
+           
+           # Get subscription and quota record
+           subscription_id = self._get_active_subscription_id(user_id, app_id)
+           if not subscription_id:
+               logger.warning(f"[AZURE DEBUG] No active subscription found for user {user_id}")
+               return False
+           
+           quota_record_id = self._get_quota_record_id(user_id, subscription_id, app_id)
+           if not quota_record_id:
+               # Initialize quota first
+               init_result = self.initialize_resource_quota(user_id, subscription_id, app_id)
+               if init_result:
+                   return self.decrement_resource_quota(user_id, app_id, resource_type, count)
+               return False
+           
+           # Decrement the quota
+           return self._decrement_quota_record(quota_record_id, resource_type, count)
+           
+       except Exception as e:
+           logger.error(f"[AZURE DEBUG] Error in decrement_resource_quota: {str(e)}")
+           logger.error(traceback.format_exc())
+           return False
 
-    # service.py - Add method to reset quota on subscription renewal
+    def _get_quota_record_id(self, user_id, subscription_id, app_id):
+       """Get quota record ID with isolated connection"""
+       try:
+           conn = self.db.get_connection()
+           cursor = conn.cursor(dictionary=True)
+           
+           cursor.execute(f"""
+               SELECT id FROM {DB_TABLE_RESOURCE_USAGE}
+               WHERE user_id = %s AND subscription_id = %s AND app_id = %s
+               ORDER BY created_at DESC LIMIT 1
+           """, (user_id, subscription_id, app_id))
+           
+           quota_record = cursor.fetchone()
+           
+           cursor.close()
+           conn.close()
+           
+           return quota_record['id'] if quota_record else None
+           
+       except Exception as e:
+           logger.error(f"Error getting quota record ID: {str(e)}")
+           return None
+
+    def _decrement_quota_record(self, quota_record_id, resource_type, count):
+       """Decrement quota record with isolated connection"""
+       try:
+           conn = self.db.get_connection()
+           cursor = conn.cursor(dictionary=True)
+           
+           # Update the quota by decrementing the specified resource
+           column_name = f"{resource_type}_quota"
+           update_query = f"""
+               UPDATE {DB_TABLE_RESOURCE_USAGE}
+               SET {column_name} = GREATEST(0, {column_name} - %s),
+                   updated_at = NOW()
+               WHERE id = %s
+           """
+           
+           cursor.execute(update_query, (count, quota_record_id))
+           conn.commit()
+           
+           cursor.close()
+           conn.close()
+           
+           logger.info(f"[AZURE DEBUG] Successfully decremented {count} {resource_type}")
+           return True
+           
+       except Exception as e:
+           logger.error(f"[AZURE DEBUG] Error updating quota: {str(e)}")
+           logger.error(traceback.format_exc())
+           return False
+
     def reset_quota_on_renewal(self, subscription_id):
-        """
-        Reset resource quota when a subscription is renewed
-        
-        Args:
-            subscription_id: The subscription ID
-            
-        Returns:
-            bool: Success status
-        """
-        logger.info(f"Resetting quota for subscription {subscription_id}")
-        
-        try:
-            conn = self.db.get_connection()
-            cursor = conn.cursor(dictionary=True)
-            
-            # Get subscription details
-            cursor.execute(f"""
-                SELECT us.*, sp.features, sp.app_id 
-                FROM {DB_TABLE_USER_SUBSCRIPTIONS} us
-                JOIN {DB_TABLE_SUBSCRIPTION_PLANS} sp ON us.plan_id = sp.id
-                WHERE us.id = %s
-            """, (subscription_id,))
-            
-            subscription = cursor.fetchone()
-            
-            if not subscription:
-                logger.error(f"Subscription {subscription_id} not found")
-                cursor.close()
-                conn.close()
-                return False
-            
-            # Parse features
-            features = parse_json_field(subscription.get('features', '{}'))
-            app_id = subscription.get('app_id')
-            user_id = subscription.get('user_id')
-            
-            # Set the quota based on app
-            if app_id == 'marketfit':
-                document_pages_quota = features.get('document_pages', 50)
-                perplexity_requests_quota = features.get('perplexity_requests', 20)
-                requests_quota = 0  # Not used for MarketFit
-            else:  # saleswit
-                document_pages_quota = 0  # Not used for SalesWit
-                perplexity_requests_quota = 0  # Not used for SalesWit
-                requests_quota = features.get('requests', 20)
-            
-            # Insert or update quota record for the new billing period
-            cursor.execute(f"""
-                INSERT INTO {DB_TABLE_RESOURCE_USAGE}
-                (user_id, subscription_id, app_id, billing_period_start, billing_period_end,
-                document_pages_quota, perplexity_requests_quota, requests_quota)
-                VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
-                ON DUPLICATE KEY UPDATE
-                document_pages_quota = %s,
-                perplexity_requests_quota = %s,
-                requests_quota = %s
-            """, (
-                user_id,
-                subscription_id,
-                app_id,
-                subscription['current_period_start'],
-                subscription['current_period_end'],
-                document_pages_quota,
-                perplexity_requests_quota,
-                requests_quota,
-                document_pages_quota,
-                perplexity_requests_quota,
-                requests_quota
-            ))
-            
-            conn.commit()
-            cursor.close()
-            conn.close()
-            
-            return True
-            
-        except Exception as e:
-            logger.error(f"Error resetting quota on renewal: {str(e)}")
-            logger.error(traceback.format_exc())
-            return False
-        
+       """
+       Reset resource quota when a subscription is renewed
+       
+       Args:
+           subscription_id: The subscription ID
+           
+       Returns:
+           bool: Success status
+       """
+       logger.info(f"Resetting quota for subscription {subscription_id}")
+       
+       try:
+           subscription_details = self._get_subscription_with_features(subscription_id)
+           
+           if not subscription_details:
+               logger.error(f"Subscription {subscription_id} not found")
+               return False
+           
+           # Parse features and calculate quota values
+           features = self._parse_subscription_features(subscription_details.get('features', '{}'))
+           quota_values = self._calculate_quota_values(subscription_details.get('app_id'), features)
+           
+           # Reset quota record
+           return self._reset_quota_record(subscription_details, quota_values)
+           
+       except Exception as e:
+           logger.error(f"Error resetting quota on renewal: {str(e)}")
+           logger.error(traceback.format_exc())
+           return False
 
-
-# service.py - Add method to get subscription by gateway ID
+    def _reset_quota_record(self, subscription_details, quota_values):
+       """Reset quota record for renewal"""
+       try:
+           conn = self.db.get_connection()
+           cursor = conn.cursor(dictionary=True)
+           
+           # Insert or update quota record for the new billing period
+           cursor.execute(f"""
+               INSERT INTO {DB_TABLE_RESOURCE_USAGE}
+               (user_id, subscription_id, app_id, billing_period_start, billing_period_end,
+               document_pages_quota, perplexity_requests_quota, requests_quota)
+               VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+               ON DUPLICATE KEY UPDATE
+               document_pages_quota = %s,
+               perplexity_requests_quota = %s,
+               requests_quota = %s
+           """, (
+               subscription_details['user_id'],
+               subscription_details['id'],
+               subscription_details['app_id'],
+               subscription_details['current_period_start'],
+               subscription_details['current_period_end'],
+               quota_values['document_pages_quota'],
+               quota_values['perplexity_requests_quota'],
+               quota_values['requests_quota'],
+               quota_values['document_pages_quota'],
+               quota_values['perplexity_requests_quota'],
+               quota_values['requests_quota']
+           ))
+           
+           conn.commit()
+           cursor.close()
+           conn.close()
+           
+           return True
+           
+       except Exception as e:
+           logger.error(f"Error resetting quota record: {str(e)}")
+           raise
 
     def get_subscription_by_gateway_id(self, gateway_sub_id, provider):
-        """
-        Get a subscription by its payment gateway subscription ID
-        
-        Args:
-            gateway_sub_id: The gateway subscription ID
-            provider: The payment gateway provider ('razorpay' or 'paypal')
-            
-        Returns:
-            dict: Subscription details or None if not found
-        """
-        logger.info(f"Getting subscription by {provider} ID: {gateway_sub_id}")
-        
-        try:
-            conn = self.db.get_connection()
-            cursor = conn.cursor(dictionary=True)
-            
-            # Different column name based on provider
-            if provider == 'razorpay':
-                id_column = 'razorpay_subscription_id'
-            elif provider == 'paypal':
-                id_column = 'paypal_subscription_id'
-            else:
-                logger.error(f"Unknown payment provider: {provider}")
-                cursor.close()
-                conn.close()
-                return None
-            
-            # Get the subscription with the gateway ID
-            cursor.execute(f"""
-                SELECT us.*, sp.name as plan_name, sp.features, sp.amount, sp.currency, sp.interval 
-                FROM {DB_TABLE_USER_SUBSCRIPTIONS} us
-                JOIN {DB_TABLE_SUBSCRIPTION_PLANS} sp ON us.plan_id = sp.id
-                WHERE us.{id_column} = %s
-                ORDER BY us.updated_at DESC LIMIT 1
-            """, (gateway_sub_id,))
-            
-            subscription = cursor.fetchone()
-            
-            cursor.close()
-            conn.close()
-            
-            # Parse JSON fields
-            if subscription:
-                if subscription.get('features'):
-                    subscription['features'] = parse_json_field(subscription['features'])
-                
-                if subscription.get('metadata'):
-                    subscription['metadata'] = parse_json_field(subscription['metadata'])
-            
-            return subscription
-            
-        except Exception as e:
-            logger.error(f"Error getting subscription by gateway ID: {str(e)}")
-            logger.error(traceback.format_exc())
-            return None
-        
-# service.py - Add ensure_user_has_resource_quota function
-    # service.py - Enhanced logging for ensure_user_has_resource_quota
+       """
+       Get a subscription by its payment gateway subscription ID
+       
+       Args:
+           gateway_sub_id: The gateway subscription ID
+           provider: The payment gateway provider ('razorpay' or 'paypal')
+           
+       Returns:
+           dict: Subscription details or None if not found
+       """
+       logger.info(f"Getting subscription by {provider} ID: {gateway_sub_id}")
+       
+       try:
+           conn = self.db.get_connection()
+           cursor = conn.cursor(dictionary=True)
+           
+           # Different column name based on provider
+           if provider == 'razorpay':
+               id_column = 'razorpay_subscription_id'
+           elif provider == 'paypal':
+               id_column = 'paypal_subscription_id'
+           else:
+               logger.error(f"Unknown payment provider: {provider}")
+               cursor.close()
+               conn.close()
+               return None
+           
+           # Get the subscription with the gateway ID
+           cursor.execute(f"""
+               SELECT us.*, sp.name as plan_name, sp.features, sp.amount, sp.currency, sp.interval 
+               FROM {DB_TABLE_USER_SUBSCRIPTIONS} us
+               JOIN {DB_TABLE_SUBSCRIPTION_PLANS} sp ON us.plan_id = sp.id
+               WHERE us.{id_column} = %s
+               ORDER BY us.updated_at DESC LIMIT 1
+           """, (gateway_sub_id,))
+           
+           subscription = cursor.fetchone()
+           
+           cursor.close()
+           conn.close()
+           
+           # Parse JSON fields
+           if subscription:
+               subscription = self._parse_subscription_json_fields(subscription)
+           
+           return subscription
+           
+       except Exception as e:
+           logger.error(f"Error getting subscription by gateway ID: {str(e)}")
+           logger.error(traceback.format_exc())
+           return None
 
     def ensure_user_has_resource_quota(self, user_id, app_id='marketfit'):
-        """Ensure a user has a resource quota entry in the database."""
-        logger.info(f"[AZURE DEBUG] Starting ensure_user_has_resource_quota for user {user_id}, app {app_id}")
-        
-        try:
-            conn = self.db.get_connection()
-            cursor = conn.cursor(dictionary=True)
-            
-            # Log DB connection success
-            logger.info(f"[AZURE DEBUG] Database connection established for user {user_id}")
-            
-            # First, get the user's active subscription
-            subscription_query = f"""
-                SELECT id, plan_id, status, current_period_start, current_period_end 
-                FROM {DB_TABLE_USER_SUBSCRIPTIONS}
-                WHERE user_id = %s AND app_id = %s AND status = 'active'
-                ORDER BY created_at DESC LIMIT 1
-            """
-            logger.info(f"[AZURE DEBUG] Executing subscription query: {subscription_query} with params {user_id}, {app_id}")
-            
-            cursor.execute(subscription_query, (user_id, app_id))
-            subscription = cursor.fetchone()
-            
-            if subscription:
-                logger.info(f"[AZURE DEBUG] Found active subscription for user {user_id}: {subscription}")
-            else:
-                logger.info(f"[AZURE DEBUG] No active subscription found for user {user_id}, will check for free plan")
-                
-                # Check if there's a free plan for the app
-                free_plan_query = f"""
-                    SELECT id FROM {DB_TABLE_SUBSCRIPTION_PLANS}
-                    WHERE app_id = %s AND amount = 0 AND is_active = TRUE
-                    LIMIT 1
-                """
-                logger.info(f"[AZURE DEBUG] Executing free plan query: {free_plan_query} with param {app_id}")
-                
-                cursor.execute(free_plan_query, (app_id,))
-                free_plan = cursor.fetchone()
-                
-                if not free_plan:
-                    logger.warning(f"[AZURE DEBUG] No free plan found for app {app_id}")
-                    cursor.close()
-                    conn.close()
-                    return False
-                
-                logger.info(f"[AZURE DEBUG] Found free plan for app {app_id}: {free_plan}")
-                
-                # Create a new subscription for the free plan
-                free_plan_id = free_plan['id']
-                subscription_id = generate_id('sub_')
-                current_period_start = datetime.now()
-                current_period_end = current_period_start + timedelta(days=30)  # 30 days for free plan
-                
-                insert_subscription_query = f"""
-                    INSERT INTO {DB_TABLE_USER_SUBSCRIPTIONS}
-                    (id, user_id, plan_id, status, app_id, current_period_start, current_period_end)
-                    VALUES (%s, %s, %s, 'active', %s, %s, %s)
-                """
-                logger.info(f"[AZURE DEBUG] Creating free subscription with query: {insert_subscription_query}")
-                
-                try:
-                    cursor.execute(insert_subscription_query, (
-                        subscription_id, 
-                        user_id, 
-                        free_plan_id, 
-                        app_id,
-                        current_period_start,
-                        current_period_end
-                    ))
-                    
-                    conn.commit()
-                    logger.info(f"[AZURE DEBUG] Created free subscription {subscription_id} for user {user_id}")
-                except Exception as sub_err:
-                    logger.error(f"[AZURE DEBUG] Error creating free subscription: {str(sub_err)}")
-                    logger.error(traceback.format_exc())
-                    conn.rollback()
-                
-                # Now we have a subscription ID for the free plan
-                subscription = {
-                    'id': subscription_id,
-                    'plan_id': free_plan_id,
-                    'current_period_start': current_period_start,
-                    'current_period_end': current_period_end
-                }
-            
-            # Check if the user already has a resource quota entry for this subscription
-            subscription_id = subscription['id']
-            quota_query = f"""
-                SELECT id 
-                FROM {DB_TABLE_RESOURCE_USAGE}
-                WHERE user_id = %s AND subscription_id = %s AND app_id = %s
-                ORDER BY created_at DESC LIMIT 1
-            """
-            logger.info(f"[AZURE DEBUG] Checking existing quota with query: {quota_query}")
-            
-            cursor.execute(quota_query, (user_id, subscription_id, app_id))
-            quota_entry = cursor.fetchone()
-            
-            # If user already has a quota entry for this subscription, no need to create a new one
-            if quota_entry:
-                logger.info(f"[AZURE DEBUG] User {user_id} already has resource quota entry: {quota_entry['id']}")
-                cursor.close()
-                conn.close()
-                return True
-            
-            logger.info(f"[AZURE DEBUG] No quota entry found, creating new one")
-            
-            # Get the plan features
-            features_query = f"""
-                SELECT features FROM {DB_TABLE_SUBSCRIPTION_PLANS}
-                WHERE id = %s
-            """
-            logger.info(f"[AZURE DEBUG] Getting plan features with query: {features_query}")
-            
-            cursor.execute(features_query, (subscription['plan_id'],))
-            plan = cursor.fetchone()
-            
-            if not plan:
-                logger.error(f"[AZURE DEBUG] Plan {subscription['plan_id']} not found")
-                cursor.close()
-                conn.close()
-                return False
-            
-            # Parse features
-            features_str = plan['features']
-            logger.info(f"[AZURE DEBUG] Plan features (raw): {features_str}")
-            
-            if isinstance(features_str, str):
-                try:
-                    features = json.loads(features_str)
-                    logger.info(f"[AZURE DEBUG] Parsed plan features: {features}")
-                except json.JSONDecodeError as json_err:
-                    logger.error(f"[AZURE DEBUG] JSON parse error: {str(json_err)}")
-                    features = {}
-            else:
-                features = features_str or {}
-                logger.info(f"[AZURE DEBUG] Non-string plan features: {features}")
-            
-            # Set quota based on app
-            if app_id == 'marketfit':
-                document_pages_quota = features.get('document_pages', 50)
-                perplexity_requests_quota = features.get('perplexity_requests', 20)
-                requests_quota = 0  # Not used for MarketFit
-            else:  # saleswit
-                document_pages_quota = 0  # Not used for SalesWit
-                perplexity_requests_quota = 0  # Not used for SalesWit
-                requests_quota = features.get('requests', 20)
-            
-            logger.info(f"[AZURE DEBUG] Setting quota: doc_pages={document_pages_quota}, perplexity={perplexity_requests_quota}, requests={requests_quota}")
-            
-            # Create the resource quota entry
-            insert_quota_query = f"""
-                INSERT INTO {DB_TABLE_RESOURCE_USAGE}
-                (user_id, subscription_id, app_id, billing_period_start, billing_period_end,
-                document_pages_quota, perplexity_requests_quota, requests_quota)
-                VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
-            """
-            logger.info(f"[AZURE DEBUG] Creating quota with query: {insert_quota_query}")
-            
-            period_start = subscription.get('current_period_start')
-            period_end = subscription.get('current_period_end')
-            
-            if not period_start or not period_end:
-                logger.warning(f"[AZURE DEBUG] Missing period dates, using defaults")
-                period_start = datetime.now()
-                period_end = period_start + timedelta(days=30)
-            
-            try:
-                cursor.execute(insert_quota_query, (
-                    user_id,
-                    subscription_id,
-                    app_id,
-                    period_start,
-                    period_end,
-                    document_pages_quota,
-                    perplexity_requests_quota,
-                    requests_quota
-                ))
-                
-                conn.commit()
-                logger.info(f"[AZURE DEBUG] Created resource quota for user {user_id}, subscription {subscription_id}")
-            except Exception as quota_err:
-                logger.error(f"[AZURE DEBUG] Error creating quota: {str(quota_err)}")
-                logger.error(traceback.format_exc())
-                conn.rollback()
-            
-            cursor.close()
-            conn.close()
-            
-            return True
-            
-        except Exception as e:
-            logger.error(f"[AZURE DEBUG] Error in ensure_user_has_resource_quota: {str(e)}")
-            logger.error(traceback.format_exc())
-            return False
+       """Ensure a user has a resource quota entry in the database."""
+       logger.info(f"[AZURE DEBUG] Starting ensure_user_has_resource_quota for user {user_id}, app {app_id}")
+       
+       try:
+           # Get or create subscription
+           subscription = self._get_or_create_subscription(user_id, app_id)
+           if not subscription:
+               return False
+           
+           # Check if quota entry exists
+           if self._quota_entry_exists(user_id, subscription['id'], app_id):
+               logger.info(f"[AZURE DEBUG] User {user_id} already has resource quota entry")
+               return True
+           
+           # Create quota entry
+           return self._create_quota_entry(user_id, subscription, app_id)
+           
+       except Exception as e:
+           logger.error(f"[AZURE DEBUG] Error in ensure_user_has_resource_quota: {str(e)}")
+           logger.error(traceback.format_exc())
+           return False
+
+    def _get_or_create_subscription(self, user_id, app_id):
+       """Get existing subscription or create free subscription"""
+       try:
+           # First try to get existing active subscription
+           subscription = self._get_active_subscription_for_quota(user_id, app_id)
+           if subscription:
+               return subscription
+           
+           # No active subscription, check for free plan
+           free_plan = self._get_free_plan(app_id)
+           if not free_plan:
+               logger.warning(f"[AZURE DEBUG] No free plan found for app {app_id}")
+               return None
+           
+           # Create free subscription
+           return self._create_free_subscription_for_quota(user_id, free_plan, app_id)
+           
+       except Exception as e:
+           logger.error(f"Error getting or creating subscription: {str(e)}")
+           raise
+
+    def _get_active_subscription_for_quota(self, user_id, app_id):
+       """Get active subscription for quota with isolated connection"""
+       try:
+           conn = self.db.get_connection()
+           cursor = conn.cursor(dictionary=True)
+           
+           cursor.execute(f"""
+               SELECT id, plan_id, status, current_period_start, current_period_end 
+               FROM {DB_TABLE_USER_SUBSCRIPTIONS}
+               WHERE user_id = %s AND app_id = %s AND status = 'active'
+               ORDER BY created_at DESC LIMIT 1
+           """, (user_id, app_id))
+           
+           subscription = cursor.fetchone()
+           
+           cursor.close()
+           conn.close()
+           return subscription
+           
+       except Exception as e:
+           logger.error(f"Error getting active subscription for quota: {str(e)}")
+           raise
+
+    def _get_free_plan(self, app_id):
+       """Get free plan with isolated connection"""
+       try:
+           conn = self.db.get_connection()
+           cursor = conn.cursor(dictionary=True)
+           
+           cursor.execute(f"""
+               SELECT id FROM {DB_TABLE_SUBSCRIPTION_PLANS}
+               WHERE app_id = %s AND amount = 0 AND is_active = TRUE
+               LIMIT 1
+           """, (app_id,))
+           
+           free_plan = cursor.fetchone()
+           
+           cursor.close()
+           conn.close()
+           return free_plan
+           
+       except Exception as e:
+           logger.error(f"Error getting free plan: {str(e)}")
+           raise
+
+    def _create_free_subscription_for_quota(self, user_id, free_plan, app_id):
+       """Create free subscription for quota with isolated connection"""
+       try:
+           conn = self.db.get_connection()
+           cursor = conn.cursor(dictionary=True)
+           
+           subscription_id = generate_id('sub_')
+           current_period_start = datetime.now()
+           current_period_end = current_period_start + timedelta(days=30)
+           
+           cursor.execute(f"""
+               INSERT INTO {DB_TABLE_USER_SUBSCRIPTIONS}
+               (id, user_id, plan_id, status, app_id, current_period_start, current_period_end)
+               VALUES (%s, %s, %s, 'active', %s, %s, %s)
+           """, (
+               subscription_id, 
+               user_id, 
+               free_plan['id'], 
+               app_id,
+               current_period_start,
+               current_period_end
+           ))
+           
+           conn.commit()
+           cursor.close()
+           conn.close()
+           
+           logger.info(f"[AZURE DEBUG] Created free subscription {subscription_id} for user {user_id}")
+           
+           return {
+               'id': subscription_id,
+               'plan_id': free_plan['id'],
+               'current_period_start': current_period_start,
+               'current_period_end': current_period_end
+           }
+           
+       except Exception as e:
+           logger.error(f"Error creating free subscription for quota: {str(e)}")
+           raise
+
+    def _quota_entry_exists(self, user_id, subscription_id, app_id):
+       """Check if quota entry exists with isolated connection"""
+       try:
+           conn = self.db.get_connection()
+           cursor = conn.cursor(dictionary=True)
+           
+           cursor.execute(f"""
+               SELECT id 
+               FROM {DB_TABLE_RESOURCE_USAGE}
+               WHERE user_id = %s AND subscription_id = %s AND app_id = %s
+               ORDER BY created_at DESC LIMIT 1
+           """, (user_id, subscription_id, app_id))
+           
+           quota_entry = cursor.fetchone()
+           
+           cursor.close()
+           conn.close()
+           
+           return quota_entry is not None
+           
+       except Exception as e:
+           logger.error(f"Error checking quota entry existence: {str(e)}")
+           raise
+
+    def _create_quota_entry(self, user_id, subscription, app_id):
+       """Create quota entry with isolated connection"""
+       try:
+           # Get plan features
+           plan_features = self._get_plan_features(subscription['plan_id'])
+           
+           # Calculate quota values
+           features = self._parse_subscription_features(plan_features)
+           quota_values = self._calculate_quota_values(app_id, features)
+           
+           # Create quota record
+           conn = self.db.get_connection()
+           cursor = conn.cursor(dictionary=True)
+           
+           period_start = subscription.get('current_period_start') or datetime.now()
+           period_end = subscription.get('current_period_end') or (datetime.now() + timedelta(days=30))
+           
+           cursor.execute(f"""
+               INSERT INTO {DB_TABLE_RESOURCE_USAGE}
+               (user_id, subscription_id, app_id, billing_period_start, billing_period_end,
+               document_pages_quota, perplexity_requests_quota, requests_quota)
+               VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+           """, (
+               user_id,
+               subscription['id'],
+               app_id,
+               period_start,
+               period_end,
+               quota_values['document_pages_quota'],
+               quota_values['perplexity_requests_quota'],
+               quota_values['requests_quota']
+           ))
+           
+           conn.commit()
+           cursor.close()
+           conn.close()
+           
+           logger.info(f"[AZURE DEBUG] Created resource quota for user {user_id}, subscription {subscription['id']}")
+           return True
+           
+       except Exception as e:
+           logger.error(f"Error creating quota entry: {str(e)}")
+           raise
+
+    def _get_plan_features(self, plan_id):
+       """Get plan features with isolated connection"""
+       try:
+           conn = self.db.get_connection()
+           cursor = conn.cursor(dictionary=True)
+           
+           cursor.execute(f"""
+               SELECT features FROM {DB_TABLE_SUBSCRIPTION_PLANS}
+               WHERE id = %s
+           """, (plan_id,))
+           
+           plan = cursor.fetchone()
+           
+           cursor.close()
+           conn.close()
+           
+           return plan['features'] if plan else '{}'
+           
+       except Exception as e:
+           logger.error(f"Error getting plan features: {str(e)}")
+           return '{}'
 
 payment_service = PaymentService()
