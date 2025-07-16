@@ -149,14 +149,12 @@ def init_payment_routes(app, payment_service):
     def check_resource():
         """Check if a user has enough resources for an action"""
         try:
-            logger.info("[AZURE DEBUG] /check-resource endpoint called")
             data = request.json
             user_id = data.get('user_id')
             app_id = data.get('app_id', 'marketfit')
             resource_type = data.get('resource_type')
             count = data.get('count', 1)
             
-            logger.info(f"[AZURE DEBUG] check-resource params: user_id={user_id}, app_id={app_id}, resource_type={resource_type}, count={count}")
             
             if not all([user_id, resource_type]):
                 logger.warning("[AZURE DEBUG] Missing required parameters")
@@ -165,7 +163,7 @@ def init_payment_routes(app, payment_service):
             result = payment_service.check_resource_availability(
                 user_id, app_id, resource_type, count
             )
-            logger.info(f"[AZURE DEBUG] check_resource_availability result: {result}")
+            logger.debug(f"[AZURE DEBUG] check_resource_availability result: {result}")
             
             if result:
                 return jsonify({'available': True})
@@ -184,15 +182,12 @@ def init_payment_routes(app, payment_service):
     def decrement_resource():
         """Decrement resource quota for a user"""
         try:
-            logger.info("[AZURE DEBUG] /decrement-resource endpoint called")
             data = request.json
             user_id = data.get('user_id')
             app_id = data.get('app_id', 'marketfit')
             resource_type = data.get('resource_type')
             count = data.get('count', 1)
-            
-            logger.info(f"[AZURE DEBUG] decrement-resource params: user_id={user_id}, app_id={app_id}, resource_type={resource_type}, count={count}")
-            
+                        
             if not all([user_id, resource_type]):
                 logger.warning("[AZURE DEBUG] Missing required parameters")
                 return jsonify({'error': 'User ID and resource type are required'}), 400
@@ -200,7 +195,7 @@ def init_payment_routes(app, payment_service):
             result = payment_service.decrement_resource_quota(
                 user_id, app_id, resource_type, count
             )
-            logger.info(f"[AZURE DEBUG] decrement_resource_quota result: {result}")
+            logger.debug(f"[AZURE DEBUG] decrement_resource_quota result: {result}")
             
             if result:
                 return jsonify({'success': True})
@@ -219,7 +214,6 @@ def init_payment_routes(app, payment_service):
     def get_resource_quota():
         """Get resource quota for a user"""
         try:
-            logger.info("[AZURE DEBUG] /resource-quota endpoint called")
             user_id = request.args.get('user_id')
             app_id = request.args.get('app_id', 'marketfit')
             
@@ -230,7 +224,6 @@ def init_payment_routes(app, payment_service):
                 return jsonify({'error': 'User ID is required'}), 400
                 
             quota = payment_service.get_resource_quota(user_id, app_id)
-            logger.info(f"[AZURE DEBUG] get_resource_quota result: {quota}")
             
             return jsonify({'quota': quota})
             
@@ -304,19 +297,16 @@ def init_payment_routes(app, payment_service):
     def ensure_resource_quota():
         """Ensure user has a resource quota entry"""
         try:
-            logger.info("[AZURE DEBUG] /ensure-resource-quota endpoint called")
             data = request.json
             user_id = data.get('user_id')
             app_id = data.get('app_id', 'marketfit')
             
-            logger.info(f"[AZURE DEBUG] ensure-resource-quota params: user_id={user_id}, app_id={app_id}")
             
             if not user_id:
                 logger.warning("[AZURE DEBUG] Missing user_id parameter")
                 return jsonify({'error': 'User ID is required'}), 400
                 
             result = payment_service.ensure_user_has_resource_quota(user_id, app_id)
-            logger.info(f"[AZURE DEBUG] ensure_user_has_resource_quota result: {result}")
             
             return jsonify({'success': result})
                 
@@ -329,4 +319,4 @@ def init_payment_routes(app, payment_service):
     app.register_blueprint(payment_bp)
     
     # Log that routes were initialized
-    logger.info("Payment gateway routes initialized")
+    logger.debug("Payment gateway routes initialized")

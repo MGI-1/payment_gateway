@@ -64,7 +64,6 @@ def sync_subscriptions(app_id=None, dry_run=False):
     cursor.execute(query, params)
     subscriptions = cursor.fetchall()
     
-    logger.info(f"Found {len(subscriptions)} subscriptions to sync")
     
     # Sync each subscription
     synced_count = 0
@@ -101,10 +100,8 @@ def sync_subscriptions(app_id=None, dry_run=False):
                 if not dry_run:
                     # This would be implemented with a method in PaymentService
                     # For now, just log it
-                    logger.info(f"Would update subscription {sub_id} status to {result.get('status')}")
                     synced_count += 1
                 else:
-                    logger.info(f"DRY RUN: Would update subscription {sub_id} status to {result.get('status')}")
                     synced_count += 1
                 
             elif provider == 'paypal':

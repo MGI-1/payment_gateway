@@ -481,7 +481,7 @@ class PaymentService:
         Returns:
             dict: Subscription details
         """
-        logger.info(f"Getting subscription for user {user_id}, app {app_id}")
+        logger.debug(f"Getting subscription for user {user_id}, app {app_id}")
         
         try:
             # Try active first
@@ -622,7 +622,6 @@ class PaymentService:
                 logger.error("Invalid webhook payload - no event type")
                 return {'status': 'error', 'message': 'Invalid webhook payload'}
             
-            logger.info(f"Processing {provider} webhook event: {event_type}")
             
             # Extract entity and user IDs
             entity_id, user_id = self._extract_webhook_ids(payload, provider)
@@ -641,7 +640,6 @@ class PaymentService:
             if provider == 'razorpay':
                 result = self._handle_razorpay_webhook(event_type, payload)
             elif provider == 'paypal':
-                logger.info(f"PayPal webhook handling not fully implemented: {event_type}")
                 result = {'status': 'ignored', 'message': 'PayPal webhook handling not implemented'}
             else:
                 logger.error(f"Unknown provider: {provider}")
@@ -694,7 +692,6 @@ class PaymentService:
         elif event_type == 'subscription.cancelled':
             return self._handle_razorpay_subscription_cancelled(payload)
         else:
-            logger.info(f"Unhandled Razorpay event type: {event_type}")
             return {'status': 'ignored', 'message': f'Unhandled event type: {event_type}'}
     
     def _handle_razorpay_subscription_authenticated(self, payload):
@@ -702,9 +699,7 @@ class PaymentService:
         try:
             subscription_data = self._extract_subscription_data(payload)
             razorpay_subscription_id = subscription_data.get('id')
-            
-            logger.info(f"Subscription Authenticated - Subscription ID: {razorpay_subscription_id}")
-            
+          
             if not razorpay_subscription_id:
                 logger.error("No subscription ID in authenticated webhook")
                 return {'status': 'error', 'message': 'Missing subscription ID'}
@@ -802,7 +797,6 @@ class PaymentService:
             # Update subscription
             self._activate_subscription_with_period(razorpay_subscription_id, start_date, period_end, subscription_data)
             
-            logger.info(f"Subscription activated: {razorpay_subscription_id}")
             
             # Initialize resource quota separately
             quota_result = self.initialize_resource_quota(subscription['user_id'], subscription['id'], subscription['app_id'])
@@ -909,9 +903,8 @@ class PaymentService:
            razorpay_subscription_id = subscription_data.get('id')
            razorpay_invoice_id = payment_data.get('invoice_id') if payment_data else None
            razorpay_payment_id = payment_data.get('id') if payment_data else None
-           
-           logger.info(f"Subscription Charged - Subscription ID: {razorpay_subscription_id}, Invoice ID: {razorpay_invoice_id}, Payment ID: {razorpay_payment_id}")
-           
+          
+         
            if not razorpay_subscription_id:
                logger.error("Missing subscription ID in charged webhook")
            
@@ -944,7 +937,6 @@ class PaymentService:
                payment_data
            )
            
-           logger.info(f"Subscription charged processed: {razorpay_subscription_id}")
            
            return {
                'status': 'success',
@@ -1044,7 +1036,7 @@ class PaymentService:
            
            self._update_subscription_status(razorpay_subscription_id, 'completed', subscription_data)
            
-           logger.info(f"Subscription completed: {razorpay_subscription_id}")
+           logger.debug(f"Subscription completed: {razorpay_subscription_id}")
            return {'status': 'success', 'message': 'Subscription marked as completed'}
            
        except Exception as e:
@@ -1090,7 +1082,6 @@ class PaymentService:
        Returns:
            dict: Cancellation result
        """
-       logger.info(f"Scheduling cancellation of subscription {subscription_id} for user {user_id}")
        
        try:
            # Phase 1: Get subscription data
@@ -1210,7 +1201,6 @@ class PaymentService:
        Returns:
            list: Billing history
        """
-       logger.info(f"Getting billing history for user {user_id}, app {app_id}")
        
        try:
            conn = self.db.get_connection()
@@ -1247,7 +1237,6 @@ class PaymentService:
        Returns:
            dict: Activation result
        """
-       logger.info(f"Manually activating subscription {subscription_id} for user {user_id}")
        
        try:
            subscription = self._get_subscription_by_razorpay_id(subscription_id)
@@ -1347,7 +1336,6 @@ class PaymentService:
        Returns:
            dict: Resource limits
        """
-       logger.info(f"Getting resource limits for user {user_id}, app {app_id}")
        
        try:
            # Get the user's active subscription
@@ -1410,7 +1398,6 @@ class PaymentService:
        Returns:
            bool: Success status
        """
-       logger.info(f"Initializing resource quota for user {user_id}, subscription {subscription_id}")
        
        try:
            subscription_details = self._get_subscription_with_features(subscription_id)
@@ -1528,7 +1515,6 @@ class PaymentService:
                    quota_values['perplexity_requests_quota'],
                    quota_values['requests_quota']
                ))
-               logger.info(f"Created new quota record for subscription {subscription_id}")
            
            conn.commit()
            cursor.close()
@@ -1542,7 +1528,6 @@ class PaymentService:
 
     def get_resource_quota(self, user_id, app_id):
        """Get remaining resource quota for a user in the current billing period."""
-       logger.info(f"[AZURE DEBUG] Starting get_resource_quota for user {user_id}, app {app_id}")
        
        try:
            # Initialize quota object based on app
@@ -1559,7 +1544,6 @@ class PaymentService:
            if quota_result:
                quota = self._update_quota_from_record(app_id, quota, quota_result)
            
-           logger.info(f"[AZURE DEBUG] Final quota result: {quota}")
            return quota
            
        except Exception as e:
@@ -1637,23 +1621,17 @@ class PaymentService:
 
     def check_resource_availability(self, user_id, app_id, resource_type, count=1):
        """Check if user has enough resources available."""
-       logger.info(f"[AZURE DEBUG] Starting check_resource_availability for user {user_id}, app {app_id}, resource_type {resource_type}, count {count}")
        
        try:
            # Ensure user has a resource quota entry
            ensure_result = self.ensure_user_has_resource_quota(user_id, app_id)
-           logger.info(f"[AZURE DEBUG] Ensure result: {ensure_result}")
            
            # Get the user's resource quota
            quota = self.get_resource_quota(user_id, app_id)
            
-           logger.info(f"[AZURE DEBUG] Current quota: {quota}")
-           logger.info(f"[AZURE DEBUG] Checking if {count} {resource_type} is available")
-           
            # Check if the quota is enough for the requested count
            if resource_type in quota:
                is_available = quota[resource_type] >= count
-               logger.info(f"[AZURE DEBUG] Resource {resource_type} availability: {is_available} (need {count}, have {quota[resource_type]})")
                return is_available
            
            # If resource type not found in quota, assume unavailable
@@ -1668,18 +1646,15 @@ class PaymentService:
 
     def decrement_resource_quota(self, user_id, app_id, resource_type, count=1):
        """Decrement resource quota for a user."""
-       logger.info(f"[AZURE DEBUG] Starting decrement_resource_quota for user {user_id}, app {app_id}, resource_type {resource_type}, count {count}")
        
        try:
            # Check if resource is available
            if not self.check_resource_availability(user_id, app_id, resource_type, count):
-               logger.warning(f"[AZURE DEBUG] Resource {resource_type} not available for user {user_id}")
                return False
            
            # Get subscription and quota record
            subscription_id = self._get_active_subscription_id(user_id, app_id)
            if not subscription_id:
-               logger.warning(f"[AZURE DEBUG] No active subscription found for user {user_id}")
                return False
            
            quota_record_id = self._get_quota_record_id(user_id, subscription_id, app_id)
@@ -1742,7 +1717,6 @@ class PaymentService:
            cursor.close()
            conn.close()
            
-           logger.info(f"[AZURE DEBUG] Successfully decremented {count} {resource_type}")
            return True
            
        except Exception as e:
@@ -1760,7 +1734,6 @@ class PaymentService:
        Returns:
            bool: Success status
        """
-       logger.info(f"Resetting quota for subscription {subscription_id}")
        
        try:
            subscription_details = self._get_subscription_with_features(subscription_id)
@@ -1876,7 +1849,6 @@ class PaymentService:
 
     def ensure_user_has_resource_quota(self, user_id, app_id='marketfit'):
        """Ensure a user has a resource quota entry in the database."""
-       logger.info(f"[AZURE DEBUG] Starting ensure_user_has_resource_quota for user {user_id}, app {app_id}")
        
        try:
            # Get or create subscription
@@ -1886,7 +1858,6 @@ class PaymentService:
            
            # Check if quota entry exists
            if self._quota_entry_exists(user_id, subscription['id'], app_id):
-               logger.info(f"[AZURE DEBUG] User {user_id} already has resource quota entry")
                return True
            
            # Create quota entry
@@ -1990,7 +1961,6 @@ class PaymentService:
            cursor.close()
            conn.close()
            
-           logger.info(f"[AZURE DEBUG] Created free subscription {subscription_id} for user {user_id}")
            
            return {
                'id': subscription_id,
@@ -2064,7 +2034,6 @@ class PaymentService:
            cursor.close()
            conn.close()
            
-           logger.info(f"[AZURE DEBUG] Created resource quota for user {user_id}, subscription {subscription['id']}")
            return True
            
        except Exception as e:
