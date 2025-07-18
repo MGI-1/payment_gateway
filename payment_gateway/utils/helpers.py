@@ -72,3 +72,159 @@ def format_subscription_price(amount, currency='INR', interval=None):
         return f"{formatted_price}/{interval}"
     
     return formatted_price
+
+# NEW PRORATION FUNCTIONS
+
+def calculate_billing_cycle_info(start_date, end_date):
+    """
+    Calculate billing cycle timing information
+    
+    Args:
+        start_date: Billing period start
+        end_date: Billing period end
+        
+    Returns:
+        dict: Billing cycle information
+    """
+    current_date = datetime.now()
+    
+    total_days = (end_date - start_date).days
+    elapsed_days = (current_date - start_date).days
+    remaining_days = (end_date - current_date).days
+    
+    # Ensure non-negative values
+    elapsed_days = max(0, elapsed_days)
+    remaining_days = max(0, remaining_days)
+    
+    return {
+        'days_total': total_days,
+        'days_elapsed': elapsed_days,
+        'days_remaining': remaining_days,
+        'time_factor': remaining_days / total_days if total_days > 0 else 0
+    }
+
+def calculate_resource_utilization(usage_data, plan_features, app_id):
+    """
+    Calculate resource utilization for proration
+    Only consider BASE PLAN usage, not addon usage
+    
+    Args:
+        usage_data: Current resource usage data
+        plan_features: Plan feature limits
+        app_id: Application ID
+        
+    Returns:
+        dict: Resource utilization data
+    """
+    if app_id == 'marketfit':
+        # Base plan quotas (what user originally got)
+        original_doc_pages = usage_data.get('original_document_pages_quota', 0)
+        original_perplexity = usage_data.get('original_perplexity_requests_quota', 0)
+        
+        # Current total quotas (base + addon)
+        current_total_doc_pages = usage_data.get('document_pages_quota', 0)
+        current_total_perplexity = usage_data.get('perplexity_requests_quota', 0)
+        
+        # Addon contributions
+        addon_doc_pages = usage_data.get('current_addon_document_pages', 0)
+        addon_perplexity = usage_data.get('current_addon_perplexity_requests', 0)
+        
+        # Calculate base plan usage only
+        base_doc_pages_remaining = current_total_doc_pages - addon_doc_pages
+        base_perplexity_remaining = current_total_perplexity - addon_perplexity
+        
+        # Base plan consumption
+        base_doc_used = original_doc_pages - base_doc_pages_remaining
+        base_perplexity_used = original_perplexity - base_perplexity_remaining
+        
+        # Ensure non-negative values
+        base_doc_used = max(0, base_doc_used)
+        base_perplexity_used = max(0, base_perplexity_used)
+        
+        # Base plan consumption percentages
+        base_doc_consumed_pct = base_doc_used / original_doc_pages if original_doc_pages > 0 else 0
+        base_perplexity_consumed_pct = base_perplexity_used / original_perplexity if original_perplexity > 0 else 0
+        
+        # Average base plan consumption (equal weightage)
+        avg_base_consumed_pct = (base_doc_consumed_pct + base_perplexity_consumed_pct) / 2
+        
+        return {
+            'resource_factor': 1 - avg_base_consumed_pct,
+            'base_plan_consumed_pct': avg_base_consumed_pct,
+            'base_doc_consumed_pct': base_doc_consumed_pct,
+            'base_perplexity_consumed_pct': base_perplexity_consumed_pct,
+            'base_doc_used': base_doc_used,
+            'base_perplexity_used': base_perplexity_used
+        }
+    
+    else:  # saleswit
+        # Single resource
+        original_requests = usage_data.get('original_requests_quota', 0)
+        current_total_requests = usage_data.get('requests_quota', 0)
+        addon_requests = usage_data.get('current_addon_requests', 0)
+        
+        base_requests_remaining = current_total_requests - addon_requests
+        base_requests_used = max(0, original_requests - base_requests_remaining)
+        base_requests_consumed_pct = base_requests_used / original_requests if original_requests > 0 else 0
+        
+        return {
+            'resource_factor': 1 - base_requests_consumed_pct,
+            'base_plan_consumed_pct': base_requests_consumed_pct,
+            'base_requests_used': base_requests_used
+        }
+
+def calculate_advanced_proration(current_plan, new_plan, billing_cycle_info, resource_info, minimum_charge=50):
+    """
+    Calculate proration using price difference method (Approach A)
+    Use HIGHER of time consumed % or resource consumed % 
+    
+    Args:
+        current_plan: Current subscription plan
+        new_plan: New subscription plan
+        billing_cycle_info: Billing cycle timing data
+        resource_info: Resource utilization data
+        minimum_charge: Minimum proration charge
+        
+    Returns:
+        dict: Proration calculation result
+    """
+    time_consumed_pct = 1 - billing_cycle_info['time_factor']
+    resource_consumed_pct = resource_info['base_plan_consumed_pct']
+    
+    # Use HIGHER of the two percentages (max billing cycle consumed)
+    billing_cycle_consumed_pct = max(time_consumed_pct, resource_consumed_pct)
+    remaining_billing_cycle_pct = 1 - billing_cycle_consumed_pct
+    
+    # Standard approach: Price difference × remaining percentage
+    price_difference = new_plan['amount'] - current_plan['amount']
+    
+    if price_difference <= 0:
+        # Downgrade - not supported, return message
+        return {
+            'is_downgrade': True,
+            'message': 'To downgrade your plan, please contact our support team. Your downgrade will be processed at the end of your current billing cycle.',
+            'current_plan': current_plan['name'],
+            'requested_plan': new_plan['name'],
+            'contact_info': 'support@yourcompany.com',
+            'action_required': 'contact_support'
+        }
+    else:
+        # Upgrade - calculate additional charge
+        prorated_amount = price_difference * remaining_billing_cycle_pct
+        
+        # Apply minimum charge for upgrades
+        if 0 < prorated_amount < minimum_charge:
+            prorated_amount = minimum_charge
+    
+    return {
+        'prorated_amount': round(prorated_amount, 2),
+        'price_difference': price_difference,
+        'time_consumed_pct': time_consumed_pct,
+        'resource_consumed_pct': resource_consumed_pct,
+        'billing_cycle_consumed_pct': billing_cycle_consumed_pct,
+        'remaining_billing_cycle_pct': remaining_billing_cycle_pct,
+        'proration_method': 'time' if time_consumed_pct > resource_consumed_pct else 'resource',
+        'is_upgrade': True,
+        'billing_cycle_info': billing_cycle_info,
+        'resource_info': resource_info
+    }

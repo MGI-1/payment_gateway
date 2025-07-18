@@ -82,3 +82,72 @@ class DatabaseManager:
             logger.error(f"Error logging event: {str(e)}")
             logger.error(traceback.format_exc())
             return False
+    
+    def log_subscription_action(self, subscription_id, action_type, details, initiated_by='system'):
+        """Log subscription changes for audit trail"""
+        try:
+            conn = self.get_connection()
+            cursor = conn.cursor()
+            
+            cursor.execute("""
+                INSERT INTO subscription_audit_log 
+                (subscription_id, action_type, details, initiated_by, created_at)
+                VALUES (%s, %s, %s, %s, NOW())
+            """, (subscription_id, action_type, json.dumps(details), initiated_by))
+            
+            conn.commit()
+            cursor.close()
+            conn.close()
+            
+            logger.info(f"Logged subscription action: {action_type} for {subscription_id}")
+            return True
+            
+        except Exception as e:
+            logger.error(f"Error logging subscription action: {str(e)}")
+            logger.error(traceback.format_exc())
+            return False
+
+    def is_event_processed(self, event_id, provider):
+        """Check if webhook event has already been processed"""
+        try:
+            conn = self.get_connection()
+            cursor = conn.cursor()
+            
+            cursor.execute("""
+                SELECT id FROM webhook_events_processed 
+                WHERE event_id = %s AND provider = %s
+            """, (event_id, provider))
+            
+            result = cursor.fetchone()
+            
+            cursor.close()
+            conn.close()
+            
+            return result is not None
+            
+        except Exception as e:
+            logger.error(f"Error checking event processed status: {str(e)}")
+            return False
+
+    def mark_event_processed(self, event_id, provider):
+        """Mark webhook event as processed"""
+        try:
+            conn = self.get_connection()
+            cursor = conn.cursor()
+            
+            cursor.execute("""
+                INSERT IGNORE INTO webhook_events_processed 
+                (event_id, provider, processed_at)
+                VALUES (%s, %s, NOW())
+            """, (event_id, provider))
+            
+            conn.commit()
+            cursor.close()
+            conn.close()
+            
+            return True
+            
+        except Exception as e:
+            logger.error(f"Error marking event as processed: {str(e)}")
+            logger.error(traceback.format_exc())
+            return False

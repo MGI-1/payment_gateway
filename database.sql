@@ -101,6 +101,12 @@ CREATE TABLE `resource_usage` (
   `document_pages_quota` int DEFAULT '0',
   `perplexity_requests_quota` int DEFAULT '0',
   `requests_quota` int DEFAULT '0',
+  `original_document_pages_quota` int DEFAULT '0',
+  `original_perplexity_requests_quota` int DEFAULT '0',
+  `original_requests_quota` int DEFAULT '0',
+  `current_addon_document_pages` int DEFAULT '0',
+  `current_addon_perplexity_requests` int DEFAULT '0',
+  `current_addon_requests` int DEFAULT '0',
   PRIMARY KEY (`id`),
   KEY `user_id` (`user_id`),
   KEY `subscription_id` (`subscription_id`),
@@ -118,4 +124,54 @@ CREATE TABLE `subscription_events_log` (
   `processed` tinyint(1) DEFAULT '0',
   `created_at` datetime DEFAULT CURRENT_TIMESTAMP,
   PRIMARY KEY (`id`)
+);
+
+-- Add new audit trail table
+CREATE TABLE `subscription_audit_log` (
+  `id` int NOT NULL AUTO_INCREMENT,
+  `subscription_id` varchar(64) NOT NULL,
+  `user_id` varchar(255) DEFAULT NULL,
+  `action_type` varchar(50) NOT NULL,
+  `details` json DEFAULT NULL,
+  `initiated_by` varchar(100) DEFAULT 'system',
+  `created_at` datetime DEFAULT CURRENT_TIMESTAMP,
+  PRIMARY KEY (`id`),
+  KEY `subscription_id` (`subscription_id`),
+  KEY `action_type` (`action_type`),
+  KEY `user_id` (`user_id`),
+  KEY `created_at` (`created_at`)
+);
+
+-- Add webhook idempotency table
+CREATE TABLE `webhook_events_processed` (
+  `id` int NOT NULL AUTO_INCREMENT,
+  `event_id` varchar(255) NOT NULL,
+  `provider` varchar(20) NOT NULL,
+  `processed_at` datetime DEFAULT CURRENT_TIMESTAMP,
+  PRIMARY KEY (`id`),
+  UNIQUE KEY `unique_event_provider` (`event_id`, `provider`)
+);
+
+-- Add addon purchase table
+CREATE TABLE `resource_addons` (
+  `id` varchar(64) NOT NULL,
+  `user_id` varchar(255) NOT NULL,
+  `subscription_id` varchar(64) NOT NULL,
+  `app_id` varchar(50) NOT NULL,
+  `addon_type` varchar(50) NOT NULL,
+  `quantity` int NOT NULL,
+  `amount_paid` decimal(10,2) NOT NULL,
+  `currency` varchar(10) DEFAULT 'INR',
+  `billing_period_start` datetime NOT NULL,
+  `billing_period_end` datetime NOT NULL,
+  `purchased_at` datetime DEFAULT CURRENT_TIMESTAMP,
+  `consumed_quantity` int DEFAULT '0',
+  `payment_id` varchar(255) DEFAULT NULL,
+  `status` varchar(20) DEFAULT 'active',
+  PRIMARY KEY (`id`),
+  KEY `user_id` (`user_id`),
+  KEY `subscription_id` (`subscription_id`),
+  KEY `app_id` (`app_id`),
+  KEY `billing_period` (`billing_period_start`, `billing_period_end`),
+  CONSTRAINT `resource_addons_ibfk_1` FOREIGN KEY (`subscription_id`) REFERENCES `user_subscriptions` (`id`)
 );

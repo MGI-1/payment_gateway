@@ -1,7 +1,7 @@
 """
 Flask routes for payment gateway integration
 """
-from flask import Blueprint, request, jsonify, current_app
+from flask import Blueprint, request, jsonify, current_app,redirect
 import logging
 import traceback
 
@@ -315,6 +315,230 @@ def init_payment_routes(app, payment_service):
             logger.error(traceback.format_exc())
             return jsonify({'error': str(e)}), 500
 
+    @payment_bp.route('/create-paypal', methods=['POST'])
+    def create_paypal_subscription():
+        """Create PayPal subscription using backend API"""
+        try:
+            data = request.json
+            user_id = data.get('user_id')
+            plan_id = data.get('plan_id')
+            app_id = data.get('app_id', 'marketfit')
+            customer_info = data.get('customer_info')  # Optional
+            
+            if not all([user_id, plan_id]):
+                return jsonify({'error': 'User ID and plan ID are required'}), 400
+            
+            result = payment_service.create_paypal_subscription(
+                user_id, plan_id, app_id, customer_info
+            )
+            
+            return jsonify({'result': result})
+            
+        except Exception as e:
+            logger.error(f"Error creating PayPal subscription: {str(e)}")
+            return jsonify({'error': str(e)}), 500
+
+    @payment_bp.route('/paypal-success', methods=['GET'])
+    def paypal_subscription_success():
+        """Handle PayPal subscription approval success"""
+        try:
+            subscription_id = request.args.get('subscription_id')
+            
+            if not subscription_id:
+                return jsonify({'error': 'Missing subscription ID'}), 400
+            
+            # Activate the subscription
+            result = payment_service.activate_paypal_subscription(subscription_id)
+            
+            # Redirect to success page
+            return redirect(f"/subscription-success?subscription_id={subscription_id}")
+            
+        except Exception as e:
+            logger.error(f"Error handling PayPal success: {str(e)}")
+            return redirect("/subscription-error")
+
+    @payment_bp.route('/paypal-cancel', methods=['GET'])
+    def paypal_subscription_cancel():
+        """Handle PayPal subscription approval cancellation"""
+        try:
+            subscription_id = request.args.get('subscription_id')
+            
+            if subscription_id:
+                # Mark subscription as cancelled
+                payment_service.cancel_pending_paypal_subscription(subscription_id)
+            
+            # Redirect to cancellation page
+            return redirect("/subscription-cancelled")
+            
+        except Exception as e:
+            logger.error(f"Error handling PayPal cancel: {str(e)}")
+            return redirect("/subscription-error")
+
+    @payment_bp.route('/upgrade', methods=['POST'])
+    def upgrade_subscription():
+        """Upgrade a subscription to a higher plan"""
+        try:
+            data = request.json
+            user_id = data.get('user_id')
+            subscription_id = data.get('subscription_id')
+            new_plan_id = data.get('new_plan_id')
+            app_id = data.get('app_id', 'marketfit')
+            
+            if not all([user_id, subscription_id, new_plan_id]):
+                return jsonify({'error': 'User ID, subscription ID, and new plan ID are required'}), 400
+            
+            result = payment_service.upgrade_subscription(user_id, subscription_id, new_plan_id, app_id)
+            return jsonify({'result': result})
+            
+        except Exception as e:
+            logger.error(f"Error upgrading subscription: {str(e)}")
+            logger.error(traceback.format_exc())
+            return jsonify({'error': str(e)}), 500
+
+    @payment_bp.route('/downgrade-request', methods=['POST'])
+    def request_downgrade():
+        """Handle downgrade request - log for manual processing"""
+        try:
+            data = request.json
+            user_id = data.get('user_id')
+            subscription_id = data.get('subscription_id')
+            new_plan_id = data.get('new_plan_id')
+            app_id = data.get('app_id', 'marketfit')
+            
+            # Log the downgrade request
+            payment_service.db.log_subscription_action(
+                subscription_id,
+                'downgrade_requested',
+                {
+                    'user_id': user_id,
+                    'requested_plan': new_plan_id,
+                    'app_id': app_id,
+                    'status': 'pending_manual_processing'
+                },
+                f'user_{user_id}'
+            )
+            
+            return jsonify({
+                'success': True,
+                'message': 'Downgrade request submitted. Our team will process it by the end of your current billing cycle.',
+                'status': 'pending'
+            })
+            
+        except Exception as e:
+            return jsonify({'error': str(e)}), 500
+
+    @payment_bp.route('/purchase-addon', methods=['POST'])
+    def purchase_addon():
+        """Purchase additional resources"""
+        try:
+            data = request.json
+            user_id = data.get('user_id')
+            app_id = data.get('app_id', 'marketfit')
+            addon_type = data.get('addon_type')  # 'document_pages', 'perplexity_requests', 'requests'
+            quantity = data.get('quantity')
+            amount_paid = data.get('amount_paid')
+            payment_id = data.get('payment_id')  # From Razorpay/PayPal
+            
+            if not all([user_id, addon_type, quantity, amount_paid]):
+                return jsonify({'error': 'Missing required parameters'}), 400
+            
+            result = payment_service.purchase_addon(
+                user_id, app_id, addon_type, quantity, amount_paid, payment_id
+            )
+            
+            return jsonify({'result': result})
+            
+        except Exception as e:
+            logger.error(f"Error purchasing addon: {str(e)}")
+            return jsonify({'error': str(e)}), 500
+
+    @payment_bp.route('/subscription/<subscription_id>/usage', methods=['GET'])
+    def get_subscription_usage():
+        """Get current usage for a subscription"""
+        try:
+            user_id = request.args.get('user_id')
+            app_id = request.args.get('app_id', 'marketfit')
+            
+            if not user_id:
+                return jsonify({'error': 'User ID is required'}), 400
+            
+            usage = payment_service.get_current_usage(user_id, subscription_id, app_id)
+            
+            if not usage:
+                return jsonify({'error': 'Usage data not found'}), 404
+            
+            return jsonify({'usage': usage})
+            
+        except Exception as e:
+            logger.error(f"Error getting subscription usage: {str(e)}")
+            logger.error(traceback.format_exc())
+            return jsonify({'error': str(e)}), 500
+
+    @payment_bp.route('/user/<user_id>/addons', methods=['GET'])
+    def get_user_addons(user_id):
+        """Get user's addon purchase history"""
+        try:
+            app_id = request.args.get('app_id', 'marketfit')
+            
+            conn = payment_service.db.get_connection()
+            cursor = conn.cursor(dictionary=True)
+            
+            cursor.execute("""
+                SELECT addon_type, quantity, consumed_quantity, amount_paid, 
+                    purchased_at, billing_period_end, status
+                FROM resource_addons
+                WHERE user_id = %s AND app_id = %s
+                ORDER BY purchased_at DESC
+            """, (user_id, app_id))
+            
+            addons = cursor.fetchall()
+            
+            cursor.close()
+            conn.close()
+            
+            return jsonify({'addons': addons})
+            
+        except Exception as e:
+            return jsonify({'error': str(e)}), 500
+
+    @payment_bp.route('/subscription/<subscription_id>/audit-log', methods=['GET'])
+    def get_subscription_audit_log(subscription_id):
+        """Get audit log for a subscription"""
+        try:
+            user_id = request.args.get('user_id')
+            
+            if not user_id:
+                return jsonify({'error': 'User ID is required'}), 400
+            
+            # Verify user owns subscription
+            subscription = payment_service._get_subscription_details(subscription_id)
+            if not subscription or subscription['user_id'] != user_id:
+                return jsonify({'error': 'Subscription not found or access denied'}), 404
+            
+            # Get audit log
+            conn = payment_service.db.get_connection()
+            cursor = conn.cursor(dictionary=True)
+            
+            cursor.execute("""
+            SELECT action_type, details, initiated_by, created_at
+            FROM subscription_audit_log
+            WHERE subscription_id = %s
+            ORDER BY created_at DESC
+            LIMIT 50
+        """, (subscription_id,))
+        
+            audit_log = cursor.fetchall()
+            
+            cursor.close()
+            conn.close()
+            
+            return jsonify({'audit_log': audit_log})
+        
+        except Exception as e:
+            logger.error(f"Error getting audit log: {str(e)}")
+            logger.error(traceback.format_exc())
+            return jsonify({'error': str(e)}), 500
+        
     # Register the blueprint with the app
     app.register_blueprint(payment_bp)
     

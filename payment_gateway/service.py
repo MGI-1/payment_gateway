@@ -9,9 +9,9 @@ from datetime import datetime, timedelta
 from .db import DatabaseManager
 from .providers.razorpay_provider import RazorpayProvider
 from .providers.paypal_provider import PayPalProvider
-from .utils.helpers import generate_id, calculate_period_end, parse_json_field
+from .utils.helpers import generate_id, calculate_period_end, calculate_billing_cycle_info, calculate_resource_utilization, calculate_advanced_proration,parse_json_field
 from .config import setup_logging, DB_TABLE_SUBSCRIPTION_PLANS, DB_TABLE_USER_SUBSCRIPTIONS, DB_TABLE_RESOURCE_USAGE
-
+from .providers.paypal_provider import PayPalProvider
 logger = logging.getLogger('payment_gateway')
 
 class PaymentService:
@@ -126,7 +126,7 @@ class PaymentService:
             cursor = conn.cursor(dictionary=True)
             
             # Start transaction for free subscription
-            conn.begin()
+            
             
             try:
                 if existing_subscription:
@@ -205,7 +205,7 @@ class PaymentService:
             conn = self.db.get_connection()
             cursor = conn.cursor(dictionary=True)
             
-            cursor.execute("SELECT email, display_name FROM users WHERE id = %s OR google_uid = %s", (user_id, user_id))
+            cursor.execute("SELECT google_uid, email, display_name FROM users WHERE id = %s OR google_uid = %s", (user_id, user_id))
             user = cursor.fetchone()
             
             cursor.close()
@@ -230,7 +230,7 @@ class PaymentService:
                 
                 response = self.razorpay.create_subscription(
                     gateway_plan_id,
-                    {'user_id': user['id'], 'email': user.get('email'), 'name': user.get('display_name')},
+                    {'user_id': user['google_uid'], 'email': user.get('email'), 'name': user.get('display_name')},
                     app_id
                 )
                 
@@ -272,7 +272,7 @@ class PaymentService:
             cursor = conn.cursor(dictionary=True)
             
             # Start focused transaction
-            conn.begin()
+            
             
             try:
                 # Generate IDs
@@ -397,7 +397,7 @@ class PaymentService:
             conn = self.db.get_connection()
             cursor = conn.cursor(dictionary=True)
             
-            conn.begin()
+            
             
             try:
                 # Calculate subscription period
@@ -966,7 +966,7 @@ class PaymentService:
            conn = self.db.get_connection()
            cursor = conn.cursor(dictionary=True)
            
-           conn.begin()
+           
            
            try:
                # Update subscription status
@@ -1260,7 +1260,7 @@ class PaymentService:
            conn = self.db.get_connection()
            cursor = conn.cursor(dictionary=True)
            
-           conn.begin()
+           
            
            try:
                # Calculate subscription period
@@ -2061,5 +2061,1123 @@ class PaymentService:
        except Exception as e:
            logger.error(f"Error getting plan features: {str(e)}")
            return '{}'
+    
+       
+
+    # NEW WEBHOOK HANDLERS FOR MISSING RAZORPAY EVENTS
+
+    def _handle_razorpay_subscription_pending(self, payload):
+        """Handle subscription.pending webhook event"""
+        try:
+            subscription_data = self._extract_subscription_data(payload)
+            razorpay_subscription_id = subscription_data.get('id')
+            
+            if not razorpay_subscription_id:
+                logger.error("No subscription ID in pending webhook")
+                return {'status': 'error', 'message': 'Missing subscription ID'}
+            
+            subscription = self._get_subscription_by_razorpay_id(razorpay_subscription_id)
+            
+            if not subscription:
+                logger.error(f"Subscription not found for Razorpay ID: {razorpay_subscription_id}")
+                return {'status': 'error', 'message': 'Subscription not found'}
+            
+            self._update_subscription_status(razorpay_subscription_id, 'pending', subscription_data)
+            
+            # Log the pending status
+            self.db.log_subscription_action(
+                subscription['id'],
+                'payment_pending',
+                {'razorpay_subscription_id': razorpay_subscription_id, 'event_data': subscription_data},
+                'razorpay_webhook'
+            )
+            
+            logger.info(f"Subscription marked as pending: {razorpay_subscription_id}")
+            return {'status': 'success', 'message': 'Subscription marked as pending'}
+            
+        except Exception as e:
+            logger.error(f"Error handling subscription pending: {str(e)}")
+            logger.error(traceback.format_exc())
+            return {'status': 'error', 'message': str(e)}
+
+    def _handle_razorpay_subscription_halted(self, payload):
+        """Handle subscription.halted webhook event"""
+        try:
+            subscription_data = self._extract_subscription_data(payload)
+            razorpay_subscription_id = subscription_data.get('id')
+            
+            if not razorpay_subscription_id:
+                logger.error("No subscription ID in halted webhook")
+                return {'status': 'error', 'message': 'Missing subscription ID'}
+            
+            subscription = self._get_subscription_by_razorpay_id(razorpay_subscription_id)
+            
+            if not subscription:
+                logger.error(f"Subscription not found for Razorpay ID: {razorpay_subscription_id}")
+                return {'status': 'error', 'message': 'Subscription not found'}
+            
+            self._update_subscription_status(razorpay_subscription_id, 'halted', subscription_data)
+            
+            # Log the halted status
+            self.db.log_subscription_action(
+                subscription['id'],
+                'payment_halted',
+                {'razorpay_subscription_id': razorpay_subscription_id, 'event_data': subscription_data},
+                'razorpay_webhook'
+            )
+            
+            logger.info(f"Subscription marked as halted: {razorpay_subscription_id}")
+            return {'status': 'success', 'message': 'Subscription marked as halted'}
+            
+        except Exception as e:
+            logger.error(f"Error handling subscription halted: {str(e)}")
+            logger.error(traceback.format_exc())
+            return {'status': 'error', 'message': str(e)}
+
+    def _handle_razorpay_subscription_updated(self, payload):
+        """Handle subscription.updated webhook event"""
+        try:
+            subscription_data = self._extract_subscription_data(payload)
+            razorpay_subscription_id = subscription_data.get('id')
+            
+            if not razorpay_subscription_id:
+                logger.error("No subscription ID in updated webhook")
+                return {'status': 'error', 'message': 'Missing subscription ID'}
+            
+            subscription = self._get_subscription_by_razorpay_id(razorpay_subscription_id)
+            
+            if not subscription:
+                logger.error(f"Subscription not found for Razorpay ID: {razorpay_subscription_id}")
+                return {'status': 'error', 'message': 'Subscription not found'}
+            
+            # Update subscription with new data
+            self._update_subscription_from_webhook(razorpay_subscription_id, subscription_data)
+            
+            # Log the update
+            self.db.log_subscription_action(
+                subscription['id'],
+                'subscription_updated',
+                {'razorpay_subscription_id': razorpay_subscription_id, 'event_data': subscription_data},
+                'razorpay_webhook'
+            )
+            
+            logger.info(f"Subscription updated: {razorpay_subscription_id}")
+            return {'status': 'success', 'message': 'Subscription updated'}
+            
+        except Exception as e:
+            logger.error(f"Error handling subscription updated: {str(e)}")
+            logger.error(traceback.format_exc())
+            return {'status': 'error', 'message': str(e)}
+
+    def _update_subscription_from_webhook(self, razorpay_subscription_id, subscription_data):
+        """Update subscription details from webhook data"""
+        try:
+            conn = self.db.get_connection()
+            cursor = conn.cursor(dictionary=True)
+            
+            # Extract relevant fields from subscription data
+            plan_id = subscription_data.get('plan_id')
+            status = subscription_data.get('status')
+            
+            update_fields = []
+            update_values = []
+            
+            if plan_id:
+                update_fields.append("plan_id = %s")
+                update_values.append(plan_id)
+            
+            if status:
+                update_fields.append("status = %s")
+                update_values.append(status)
+            
+            if update_fields:
+                update_fields.append("updated_at = NOW()")
+                update_fields.append("metadata = JSON_MERGE_PATCH(IFNULL(metadata, '{}'), %s)")
+                update_values.append(json.dumps(subscription_data))
+                update_values.append(razorpay_subscription_id)
+                
+                query = f"""
+                    UPDATE {DB_TABLE_USER_SUBSCRIPTIONS}
+                    SET {', '.join(update_fields)}
+                    WHERE razorpay_subscription_id = %s
+                """
+                
+                cursor.execute(query, update_values)
+                conn.commit()
+            
+            cursor.close()
+            conn.close()
+            
+        except Exception as e:
+            logger.error(f"Error updating subscription from webhook: {str(e)}")
+            raise
+
+    def _update_subscription_status_by_gateway_id(self, gateway_subscription_id, status, data, provider):
+        """Update subscription status by gateway ID"""
+        try:
+            conn = self.db.get_connection()
+            cursor = conn.cursor(dictionary=True)
+            
+            if provider == 'razorpay':
+                id_column = 'razorpay_subscription_id'
+            elif provider == 'paypal':
+                id_column = 'paypal_subscription_id'
+            else:
+                raise ValueError(f"Unknown provider: {provider}")
+            
+            cursor.execute(f"""
+                UPDATE {DB_TABLE_USER_SUBSCRIPTIONS}
+                SET status = %s, 
+                    updated_at = NOW(),
+                    metadata = JSON_MERGE_PATCH(IFNULL(metadata, '{{}}'), %s)
+                WHERE {id_column} = %s
+            """, (status, json.dumps(data), gateway_subscription_id))
+            
+            conn.commit()
+            cursor.close()
+            conn.close()
+            
+        except Exception as e:
+            logger.error(f"Error updating subscription status by gateway ID: {str(e)}")
+            raise
+
+    # UPDATE EXISTING WEBHOOK HANDLER TO INCLUDE NEW EVENTS
+    def _handle_razorpay_webhook(self, event_type, payload):
+        """Handle Razorpay webhook events"""
+        if event_type == 'subscription.authenticated':
+            return self._handle_razorpay_subscription_authenticated(payload)
+        elif event_type == 'subscription.activated':
+            return self._handle_razorpay_subscription_activated(payload)
+        elif event_type == 'subscription.charged':
+            return self._handle_razorpay_subscription_charged(payload)
+        elif event_type == 'subscription.completed':
+            return self._handle_razorpay_subscription_completed(payload)
+        elif event_type == 'subscription.cancelled':
+            return self._handle_razorpay_subscription_cancelled(payload)
+        elif event_type == 'subscription.pending':  # NEW
+            return self._handle_razorpay_subscription_pending(payload)
+        elif event_type == 'subscription.halted':   # NEW
+            return self._handle_razorpay_subscription_halted(payload)
+        elif event_type == 'subscription.updated':  # NEW
+            return self._handle_razorpay_subscription_updated(payload)
+        else:
+            return {'status': 'ignored', 'message': f'Unhandled event type: {event_type}'}
+
+    # UPDATE EXISTING HANDLE_WEBHOOK METHOD
+    def handle_webhook(self, payload, provider='razorpay'):
+        """Handle webhook events for subscription updates"""
+        try:
+            if provider == 'razorpay':
+                event_type = payload.get('event')
+            elif provider == 'paypal':
+                event_type = payload.get('event_type')
+            else:
+                event_type = payload.get('event')
+            
+            if not event_type:
+                logger.error("Invalid webhook payload - no event type")
+                return {'status': 'error', 'message': 'Invalid webhook payload'}
+            
+            # Extract entity and user IDs
+            entity_id, user_id = self._extract_webhook_ids(payload, provider)
+            
+            # Log the webhook event
+            self.db.log_event(
+                event_type,
+                entity_id,
+                user_id,
+                payload,
+                provider=provider,
+                processed=False
+            )
+            
+            # Route to the appropriate handler based on the event type
+            if provider == 'razorpay':
+                result = self._handle_razorpay_webhook(event_type, payload)
+            elif provider == 'paypal':
+                # PayPal events are handled in the webhook handler itself
+                result = {'status': 'success', 'message': f'PayPal event {event_type} processed'}
+            else:
+                logger.error(f"Unknown provider: {provider}")
+                result = {'status': 'error', 'message': f'Unknown provider: {provider}'}
+            
+            # Update the event log to mark as processed
+            self.db.log_event(
+                f"{event_type}_processed",
+                entity_id,
+                user_id,
+                result,
+                provider=provider,
+                processed=True
+            )
+            
+            return {'status': 'success', 'message': f'Processed {event_type} event', 'result': result}
+                
+        except Exception as e:
+            logger.error(f"Error handling webhook: {str(e)}")
+            logger.error(traceback.format_exc())
+            return {'status': 'error', 'message': str(e)}
+
+    # PAYPAL SUBSCRIPTION CREATION
+
+    def create_paypal_subscription(self, user_id, plan_id, app_id, customer_info=None):
+        """
+        Create PayPal subscription using backend API
+        
+        Args:
+            user_id: User's ID (google_uid)
+            plan_id: Our internal plan ID
+            app_id: Application ID
+            customer_info: Optional customer information
+            
+        Returns:
+            dict: Subscription creation result with approval URL
+        """
+        logger.info(f"Creating PayPal subscription for user {user_id}, plan {plan_id}")
+        
+        try:
+            # Phase 1: Get plan details
+            plan = self._get_plan(plan_id)
+            if not plan:
+                raise ValueError(f"Plan {plan_id} not found")
+            
+            if not plan.get('paypal_plan_id'):
+                raise ValueError(f"Plan {plan_id} missing PayPal plan ID")
+            
+            # Phase 2: Prepare customer info
+            if not customer_info:
+                customer_info = self._get_user_info(user_id)
+            
+            customer_info.update({
+                'user_id': user_id,
+                'brand_name': 'MarketFit' if app_id == 'marketfit' else 'SalesWit'
+            })
+            
+            # Phase 3: Create subscription with PayPal
+            paypal_result = self.paypal.create_subscription(
+                plan['paypal_plan_id'],
+                customer_info,
+                app_id
+            )
+            
+            if paypal_result.get('error'):
+                raise ValueError(f"PayPal subscription creation failed: {paypal_result['message']}")
+            
+            # Phase 4: Store subscription in database (pending approval)
+            subscription_data = {
+                'id': generate_id('sub_'),
+                'user_id': user_id,
+                'plan_id': plan_id,
+                'paypal_subscription_id': paypal_result['subscription_id'],
+                'payment_gateway': 'paypal',
+                'status': 'pending_approval',
+                'app_id': app_id,
+                'gateway_metadata': paypal_result
+            }
+            
+            subscription_id = self._store_subscription(subscription_data)
+            
+            # Phase 5: Log the creation
+            self.db.log_subscription_action(
+                subscription_id,
+                'paypal_subscription_created',
+                {
+                    'paypal_subscription_id': paypal_result['subscription_id'],
+                    'plan_id': plan_id,
+                    'status': 'pending_approval'
+                },
+                f'user_{user_id}'
+            )
+            
+            return {
+                'success': True,
+                'subscription_id': subscription_id,
+                'paypal_subscription_id': paypal_result['subscription_id'],
+                'approval_url': paypal_result['approval_url'],
+                'status': 'pending_approval',
+                'message': 'PayPal subscription created. User approval required.',
+                'requires_approval': True
+            }
+            
+        except Exception as e:
+            logger.error(f"Error creating PayPal subscription: {str(e)}")
+            logger.error(traceback.format_exc())
+            raise
+
+
+    def _store_subscription(self, subscription_data):
+        """Store subscription in database"""
+        try:
+            conn = self.db.get_connection()
+            cursor = conn.cursor()
+            
+            cursor.execute(f"""
+                INSERT INTO {DB_TABLE_USER_SUBSCRIPTIONS}
+                (id, user_id, plan_id, paypal_subscription_id, payment_gateway, 
+                status, app_id, gateway_metadata, created_at)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, NOW())
+            """, (
+                subscription_data['id'],
+                subscription_data['user_id'],
+                subscription_data['plan_id'],
+                subscription_data['paypal_subscription_id'],
+                subscription_data['payment_gateway'],
+                subscription_data['status'],
+                subscription_data['app_id'],
+                json.dumps(subscription_data['gateway_metadata'])
+            ))
+            
+            conn.commit()
+            cursor.close()
+            conn.close()
+            
+            return subscription_data['id']
+            
+        except Exception as e:
+            logger.error(f"Error storing subscription: {str(e)}")
+            raise
+
+    # SUBSCRIPTION UPGRADE FUNCTIONALITY
+
+    def get_current_usage(self, user_id, subscription_id, app_id):
+        """Get current resource usage for proration calculation"""
+        try:
+            conn = self.db.get_connection()
+            cursor = conn.cursor(dictionary=True)
+            
+            cursor.execute(f"""
+                SELECT 
+                    document_pages_quota,
+                    perplexity_requests_quota,
+                    requests_quota,
+                    original_document_pages_quota,
+                    original_perplexity_requests_quota,
+                    original_requests_quota,
+                    current_addon_document_pages,
+                    current_addon_perplexity_requests,
+                    current_addon_requests,
+                    billing_period_start,
+                    billing_period_end
+                FROM {DB_TABLE_RESOURCE_USAGE}
+                WHERE user_id = %s AND subscription_id = %s AND app_id = %s
+                ORDER BY created_at DESC LIMIT 1
+            """, (user_id, subscription_id, app_id))
+            
+            usage = cursor.fetchone()
+            cursor.close()
+            conn.close()
+            
+            return usage
+            
+        except Exception as e:
+            logger.error(f"Error getting current usage: {str(e)}")
+            return None
+
+    def upgrade_subscription(self, user_id, subscription_id, new_plan_id, app_id):
+        """
+        Upgrade subscription with advanced proration
+        
+        Args:
+            user_id: The user's google_uid
+            subscription_id: The subscription ID
+            new_plan_id: New plan ID to upgrade to
+            app_id: Application ID
+            
+        Returns:
+            dict: Upgrade result
+        """
+        logger.info(f"Upgrading subscription {subscription_id} to plan {new_plan_id}")
+        
+        try:
+            # Phase 1: Get current state
+            subscription = self._get_subscription_details(subscription_id)
+            if not subscription:
+                raise ValueError("Subscription not found")
+            
+            if subscription['user_id'] != user_id:
+                raise ValueError("Subscription does not belong to user")
+            
+            current_plan = self._get_plan(subscription['plan_id'])
+            new_plan = self._get_plan(new_plan_id)
+            
+            if not current_plan or not new_plan:
+                raise ValueError("Plan not found")
+            
+            # Phase 2: Calculate proration
+            usage_data = self.get_current_usage(user_id, subscription_id, app_id)
+            
+            if not usage_data:
+                raise ValueError("Usage data not found")
+            
+            billing_cycle_info = calculate_billing_cycle_info(
+                usage_data['billing_period_start'],
+                usage_data['billing_period_end']
+            )
+            
+            resource_info = calculate_resource_utilization(
+                usage_data,
+                current_plan['features'],
+                app_id
+            )
+            
+            proration_result = calculate_advanced_proration(
+                current_plan,
+                new_plan,
+                billing_cycle_info,
+                resource_info
+            )
+            
+            # Check if it's a downgrade
+            if proration_result.get('is_downgrade'):
+                return proration_result
+            
+            # Phase 3: Handle gateway-specific upgrade
+            if subscription.get('razorpay_subscription_id'):
+                result = self._upgrade_razorpay_subscription(
+                    subscription, new_plan_id, proration_result
+                )
+            elif subscription.get('paypal_subscription_id'):
+                result = self._upgrade_paypal_subscription(
+                    subscription, new_plan_id, proration_result
+                )
+            else:
+                raise ValueError("No gateway subscription ID found")
+            
+            # Phase 4: Log the upgrade
+            self.db.log_subscription_action(
+                subscription_id,
+                'plan_upgrade',
+                {
+                    'old_plan_id': current_plan['id'],
+                    'new_plan_id': new_plan_id,
+                    'proration_amount': proration_result.get('prorated_amount', 0),
+                    'proration_details': proration_result
+                },
+                f'user_{user_id}'
+            )
+            
+            return result
+            
+        except Exception as e:
+            logger.error(f"Error upgrading subscription: {str(e)}")
+            logger.error(traceback.format_exc())
+            raise
+
+    def _upgrade_razorpay_subscription(self, subscription, new_plan_id, proration_result):
+        """Handle Razorpay subscription upgrade"""
+        try:
+            razorpay_subscription_id = subscription['razorpay_subscription_id']
+            
+            # Use Razorpay's update subscription API
+            response = self.razorpay.client.subscription.update(razorpay_subscription_id, {
+                'plan_id': new_plan_id,
+                'prorate': True
+            })
+            
+            if 'error' in response:
+                raise ValueError(f"Razorpay upgrade failed: {response.get('error', {}).get('description', 'Unknown error')}")
+            
+            # Update local database
+            self._update_subscription_plan(subscription['id'], new_plan_id)
+            
+            # Update quotas immediately
+            self.initialize_resource_quota(
+                subscription['user_id'], 
+                subscription['id'], 
+                subscription['app_id']
+            )
+            
+            return {
+                'success': True,
+                'subscription_id': subscription['id'],
+                'new_plan_id': new_plan_id,
+                'proration_amount': proration_result.get('prorated_amount', 0),
+                'gateway_response': response,
+                'message': 'Subscription upgraded successfully'
+            }
+            
+        except Exception as e:
+            logger.error(f"Error upgrading Razorpay subscription: {str(e)}")
+            raise
+
+    def _upgrade_paypal_subscription(self, subscription, new_plan_id, proration_result):
+        """Handle PayPal subscription upgrade using PayPal API"""
+        try:
+            paypal_subscription_id = subscription['paypal_subscription_id']
+            
+            # Get the new plan's PayPal plan ID
+            new_plan = self._get_plan(new_plan_id)
+            if not new_plan or not new_plan.get('paypal_plan_id'):
+                raise ValueError(f"New plan {new_plan_id} missing PayPal plan ID")
+            
+            new_paypal_plan_id = new_plan['paypal_plan_id']
+            
+            # Phase 1: Update PayPal subscription with proration
+            paypal_result = self.paypal.update_subscription(
+                paypal_subscription_id,
+                new_paypal_plan_id,
+                proration_result.get('prorated_amount', 0)
+            )
+            
+            if paypal_result.get('error'):
+                raise ValueError(f"PayPal upgrade failed: {paypal_result['message']}")
+            
+            # Phase 2: Update local database
+            self._update_subscription_plan(subscription['id'], new_plan_id)
+            
+            # Phase 3: Update quotas immediately
+            self.initialize_resource_quota(
+                subscription['user_id'], 
+                subscription['id'], 
+                subscription['app_id']
+            )
+            
+            # Phase 4: Log the upgrade
+            self.db.log_subscription_action(
+                subscription['id'],
+                'paypal_upgrade_completed',
+                {
+                    'paypal_subscription_id': paypal_subscription_id,
+                    'new_plan_id': new_plan_id,
+                    'new_paypal_plan_id': new_paypal_plan_id,
+                    'proration_amount': proration_result.get('prorated_amount', 0),
+                    'paypal_response': paypal_result
+                },
+                f"user_{subscription['user_id']}"
+            )
+            
+            return {
+                'success': True,
+                'subscription_id': subscription['id'],
+                'new_plan_id': new_plan_id,
+                'proration_amount': proration_result.get('prorated_amount', 0),
+                'paypal_result': paypal_result,
+                'approval_url': paypal_result.get('approval_url'),
+                'message': 'PayPal subscription upgraded successfully',
+                'note': 'If approval URL is present, user may need to approve the change'
+            }
+            
+        except Exception as e:
+            logger.error(f"Error upgrading PayPal subscription: {str(e)}")
+            raise
+
+    def _update_subscription_plan(self, subscription_id, new_plan_id):
+        """Update subscription plan in database"""
+        try:
+            conn = self.db.get_connection()
+            cursor = conn.cursor()
+            
+            cursor.execute(f"""
+                UPDATE {DB_TABLE_USER_SUBSCRIPTIONS}
+                SET plan_id = %s, updated_at = NOW()
+                WHERE id = %s
+            """, (new_plan_id, subscription_id))
+            
+            conn.commit()
+            cursor.close()
+            conn.close()
+            
+        except Exception as e:
+            logger.error(f"Error updating subscription plan: {str(e)}")
+            raise
+
+    def get_subscription_by_gateway_id(self, gateway_subscription_id, provider):
+        """Get subscription by gateway ID (used by webhooks and upgrades)"""
+        try:
+            conn = self.db.get_connection()
+            cursor = conn.cursor(dictionary=True)
+            
+            if provider == 'razorpay':
+                id_column = 'razorpay_subscription_id'
+            elif provider == 'paypal':
+                id_column = 'paypal_subscription_id'
+            else:
+                raise ValueError(f"Unknown provider: {provider}")
+            
+            cursor.execute(f"""
+                SELECT * FROM {DB_TABLE_USER_SUBSCRIPTIONS}
+                WHERE {id_column} = %s
+            """, (gateway_subscription_id,))
+            
+            subscription = cursor.fetchone()
+            cursor.close()
+            conn.close()
+            
+            return subscription
+            
+        except Exception as e:
+            logger.error(f"Error getting subscription by gateway ID: {str(e)}")
+            return None
+
+    # ADDON PURCHASE FUNCTIONALITY
+
+    def purchase_addon(self, user_id, app_id, addon_type, quantity, amount_paid, payment_id=None):
+        """
+        Purchase additional resources as addon
+        
+        Args:
+            user_id: User's google_uid
+            app_id: 'marketfit' or 'saleswit'
+            addon_type: 'document_pages', 'perplexity_requests', or 'requests'
+            quantity: Number of resources to add
+            amount_paid: Amount paid for addon
+            payment_id: Payment gateway transaction ID
+            
+        Returns:
+            dict: Purchase result
+        """
+        logger.info(f"Processing addon purchase for user {user_id}: {quantity} {addon_type}")
+        
+        try:
+            # Phase 1: Get user's current subscription and billing period
+            subscription = self.get_user_subscription(user_id, app_id)
+            if not subscription:
+                raise ValueError("No active subscription found")
+            
+            # Phase 2: Validate addon type for app
+            self._validate_addon_type(app_id, addon_type)
+            
+            # Phase 3: Record addon purchase
+            addon_id = self._record_addon_purchase(
+                user_id, subscription['id'], app_id, addon_type, 
+                quantity, amount_paid, payment_id, subscription
+            )
+            
+            # Phase 4: Update main quota columns immediately
+            self._add_addon_to_quota(user_id, subscription['id'], app_id, addon_type, quantity)
+            
+            # Phase 5: Log the purchase
+            self.db.log_subscription_action(
+                subscription['id'],
+                'addon_purchased',
+                {
+                    'addon_type': addon_type,
+                    'quantity': quantity,
+                    'amount_paid': amount_paid,
+                    'addon_id': addon_id
+                },
+                f'user_{user_id}'
+            )
+            
+            return {
+                'success': True,
+                'addon_id': addon_id,
+                'addon_type': addon_type,
+                'quantity': quantity,
+                'expires_at': subscription['current_period_end'],
+                'message': f'Successfully added {quantity} {addon_type} to your account'
+            }
+            
+        except Exception as e:
+            logger.error(f"Error purchasing addon: {str(e)}")
+            logger.error(traceback.format_exc())
+            raise
+
+    def _validate_addon_type(self, app_id, addon_type):
+        """Validate addon type is valid for the app"""
+        valid_addons = {
+            'marketfit': ['document_pages', 'perplexity_requests'],
+            'saleswit': ['requests']
+        }
+        
+        if addon_type not in valid_addons.get(app_id, []):
+            raise ValueError(f"Invalid addon type '{addon_type}' for app '{app_id}'")
+
+    def _record_addon_purchase(self, user_id, subscription_id, app_id, addon_type, quantity, amount_paid, payment_id, subscription):
+        """Record addon purchase in database"""
+        try:
+            conn = self.db.get_connection()
+            cursor = conn.cursor(dictionary=True)
+            
+            addon_id = generate_id('addon_')
+            
+            cursor.execute("""
+                INSERT INTO resource_addons 
+                (id, user_id, subscription_id, app_id, addon_type, quantity, 
+                amount_paid, billing_period_start, billing_period_end, payment_id, status)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, 'active')
+            """, (
+                addon_id, user_id, subscription_id, app_id, addon_type, quantity,
+                amount_paid, subscription['current_period_start'], 
+                subscription['current_period_end'], payment_id
+            ))
+            
+            conn.commit()
+            cursor.close()
+            conn.close()
+            
+            return addon_id
+            
+        except Exception as e:
+            logger.error(f"Error recording addon purchase: {str(e)}")
+            raise
+
+    def _add_addon_to_quota(self, user_id, subscription_id, app_id, addon_type, quantity):
+        """Add addon quantity to main quota columns"""
+        try:
+            conn = self.db.get_connection()
+            cursor = conn.cursor(dictionary=True)
+            
+            # Map addon_type to quota column
+            quota_column = f"{addon_type}_quota"
+            addon_tracking_column = f"current_addon_{addon_type}"
+            
+            cursor.execute(f"""
+                UPDATE {DB_TABLE_RESOURCE_USAGE}
+                SET {quota_column} = {quota_column} + %s,
+                    {addon_tracking_column} = {addon_tracking_column} + %s,
+                    updated_at = NOW()
+                WHERE user_id = %s AND subscription_id = %s AND app_id = %s
+            """, (quantity, quantity, user_id, subscription_id, app_id))
+            
+            conn.commit()
+            cursor.close()
+            conn.close()
+            
+            logger.info(f"Added {quantity} {addon_type} to user {user_id} quota")
+            
+        except Exception as e:
+            logger.error(f"Error adding addon to quota: {str(e)}")
+            raise
+
+    # UPDATED QUOTA RESET LOGIC
+    def reset_quota_on_renewal(self, subscription_id):
+        """
+        Reset resource quota when subscription renews
+        Addons expire and are not carried over
+        """
+        try:
+            subscription_details = self._get_subscription_with_features(subscription_id)
+            
+            if not subscription_details:
+                logger.error(f"Subscription {subscription_id} not found")
+                return False
+            
+            # Parse features and calculate BASE plan quota values only
+            features = self._parse_subscription_features(subscription_details.get('features', '{}'))
+            base_quota_values = self._calculate_quota_values(subscription_details.get('app_id'), features)
+            
+            # Reset to base plan only - expire all addons
+            return self._reset_quota_to_base_plan(subscription_details, base_quota_values)
+            
+        except Exception as e:
+            logger.error(f"Error resetting quota on renewal: {str(e)}")
+            return False
+
+    def _reset_quota_to_base_plan(self, subscription_details, base_quota_values):
+        """Reset quota to base plan and expire addons"""
+        try:
+            conn = self.db.get_connection()
+            cursor = conn.cursor(dictionary=True)
+            
+            
+            
+            try:
+                # Reset quota to base plan values only
+                cursor.execute(f"""
+                    UPDATE {DB_TABLE_RESOURCE_USAGE}
+                    SET document_pages_quota = %s,
+                        perplexity_requests_quota = %s,
+                        requests_quota = %s,
+                        original_document_pages_quota = %s,
+                        original_perplexity_requests_quota = %s,
+                        original_requests_quota = %s,
+                        current_addon_document_pages = 0,
+                        current_addon_perplexity_requests = 0,
+                        current_addon_requests = 0,
+                        billing_period_start = %s,
+                        billing_period_end = %s,
+                        updated_at = NOW()
+                    WHERE user_id = %s AND subscription_id = %s AND app_id = %s
+                """, (
+                    base_quota_values['document_pages_quota'],
+                    base_quota_values['perplexity_requests_quota'],
+                    base_quota_values['requests_quota'],
+                    base_quota_values['document_pages_quota'],  # Original = base plan
+                    base_quota_values['perplexity_requests_quota'],
+                    base_quota_values['requests_quota'],
+                    subscription_details['current_period_start'],
+                    subscription_details['current_period_end'],
+                    subscription_details['user_id'],
+                    subscription_details['id'],
+                    subscription_details['app_id']
+                ))
+                
+                # Mark all addons from previous billing cycle as expired
+                cursor.execute("""
+                    UPDATE resource_addons
+                    SET status = 'expired'
+                    WHERE subscription_id = %s 
+                    AND billing_period_end <= %s
+                    AND status = 'active'
+                """, (subscription_details['id'], subscription_details['current_period_start']))
+                
+                conn.commit()
+                
+                logger.info(f"Reset quota to base plan for subscription {subscription_details['id']}")
+                return True
+                
+            except Exception as e:
+                conn.rollback()
+                raise
+                
+        except Exception as e:
+            logger.error(f"Error resetting quota to base plan: {str(e)}")
+            raise
+        finally:
+            cursor.close()
+            conn.close()
+
+    # UPDATED QUOTA INITIALIZATION WITH ORIGINAL TRACKING
+    def initialize_resource_quota(self, user_id, subscription_id, app_id):
+        """
+        Initialize or reset resource quota for a subscription period
+        Enhanced to track original quotas for proration
+        """
+        try:
+            subscription_details = self._get_subscription_with_features(subscription_id)
+            
+            if not subscription_details:
+                logger.error(f"Subscription {subscription_id} not found")
+                return False
+            
+            # Parse features
+            features = self._parse_subscription_features(subscription_details.get('features', '{}'))
+            
+            # Set quota based on app
+            quota_values = self._calculate_quota_values(app_id, features)
+            
+            # Create or update quota record with original values
+            return self._save_quota_record_with_originals(user_id, subscription_id, app_id, subscription_details, quota_values)
+            
+        except Exception as e:
+            logger.error(f"Error initializing resource quota: {str(e)}")
+            logger.error(traceback.format_exc())
+            return False
+
+    def _save_quota_record_with_originals(self, user_id, subscription_id, app_id, subscription_details, quota_values):
+        """Save or update quota record with original quota tracking"""
+        try:
+            conn = self.db.get_connection()
+            cursor = conn.cursor(dictionary=True)
+            
+            # Check if existing record exists
+            cursor.execute(f"""
+                SELECT id FROM {DB_TABLE_RESOURCE_USAGE}
+                WHERE user_id = %s AND subscription_id = %s AND app_id = %s
+                ORDER BY created_at DESC LIMIT 1
+            """, (user_id, subscription_id, app_id))
+            
+            quota_record = cursor.fetchone()
+            
+            if quota_record:
+                # Update existing record
+                cursor.execute(f"""
+                    UPDATE {DB_TABLE_RESOURCE_USAGE}
+                    SET document_pages_quota = %s,
+                        perplexity_requests_quota = %s,
+                        requests_quota = %s,
+                        original_document_pages_quota = %s,
+                        original_perplexity_requests_quota = %s,
+                        original_requests_quota = %s,
+                        current_addon_document_pages = 0,
+                        current_addon_perplexity_requests = 0,
+                        current_addon_requests = 0,
+                        updated_at = NOW()
+                    WHERE id = %s
+                """, (
+                    quota_values['document_pages_quota'],
+                    quota_values['perplexity_requests_quota'],
+                    quota_values['requests_quota'],
+                    quota_values['document_pages_quota'],  # Set original to new values
+                    quota_values['perplexity_requests_quota'],
+                    quota_values['requests_quota'],
+                    quota_record['id']
+                ))
+                logger.info(f"Updated existing quota record {quota_record['id']}")
+            else:
+                # Create new record
+                cursor.execute(f"""
+                    INSERT INTO {DB_TABLE_RESOURCE_USAGE}
+                    (user_id, subscription_id, app_id, billing_period_start, billing_period_end,
+                    document_pages_quota, perplexity_requests_quota, requests_quota,
+                    original_document_pages_quota, original_perplexity_requests_quota, original_requests_quota,
+                    current_addon_document_pages, current_addon_perplexity_requests, current_addon_requests)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, 0, 0, 0)
+                """, (
+                    user_id,
+                    subscription_id,
+                    app_id,
+                    subscription_details.get('current_period_start') or datetime.now(),
+                    subscription_details.get('current_period_end') or (datetime.now() + timedelta(days=30)),
+                    quota_values['document_pages_quota'],
+                    quota_values['perplexity_requests_quota'],
+                    quota_values['requests_quota'],
+                    quota_values['document_pages_quota'],  # Original quotas
+                    quota_values['perplexity_requests_quota'],
+                    quota_values['requests_quota']
+                ))
+            
+            conn.commit()
+            cursor.close()
+            conn.close()
+            
+            return True
+            
+        except Exception as e:
+            logger.error(f"Error saving quota record: {str(e)}")
+            raise
+
+    # UPDATED CANCELLATION LOGIC FOR PAYPAL
+    def cancel_subscription(self, user_id, subscription_id):
+        """
+        Cancel a user's subscription
+        Razorpay: at the end of the billing cycle
+        PayPal: immediately but keep access until period end
+        """
+        try:
+            # Phase 1: Get subscription data
+            subscription = self._get_subscription_for_cancellation(user_id, subscription_id)
+            
+            # Phase 2: Handle based on gateway
+            if subscription.get('razorpay_subscription_id'):
+                result = self._cancel_razorpay_subscription(subscription)
+            elif subscription.get('paypal_subscription_id'):
+                result = self._cancel_paypal_subscription(subscription)
+            else:
+                raise ValueError("No gateway subscription found")
+            
+            # Phase 3: Log cancellation
+            self.db.log_subscription_action(
+                subscription_id,
+                'cancellation_requested',
+                {
+                    'gateway': 'razorpay' if subscription.get('razorpay_subscription_id') else 'paypal',
+                    'cancelled_by': f'user_{user_id}',
+                    'cancellation_details': result
+                },
+                f'user_{user_id}'
+            )
+            
+            return result
+            
+        except Exception as e:
+            logger.error(f"Error cancelling subscription: {str(e)}")
+            logger.error(traceback.format_exc())
+            raise
+
+    def _cancel_razorpay_subscription(self, subscription):
+        """Cancel Razorpay subscription at end of cycle"""
+        try:
+            # Use the existing Razorpay provider to cancel
+            result = self.razorpay.cancel_subscription(
+                subscription['razorpay_subscription_id'],
+                cancel_at_cycle_end=True
+            )
+            
+            if result.get('error'):
+                logger.error(f"Error scheduling cancellation with Razorpay: {result.get('message')}")
+            else:
+                logger.info(f"Razorpay subscription scheduled for cancellation: {subscription['razorpay_subscription_id']}")
+            
+            # Mark in database (keep status as active until actually cancelled)
+            return self._mark_subscription_scheduled_for_cancellation(subscription['id'], subscription)
+            
+        except Exception as e:
+            logger.error(f"Error cancelling Razorpay subscription: {str(e)}")
+            raise
+
+    def _cancel_paypal_subscription(self, subscription):
+        """Cancel PayPal subscription immediately but keep access"""
+        try:
+            paypal_subscription_id = subscription['paypal_subscription_id']
+            
+            # Cancel with PayPal using our provider
+            result = self.paypal.cancel_subscription(paypal_subscription_id)
+            
+            if result.get('error'):
+                logger.error(f"PayPal cancellation failed: {result['message']}")
+                raise ValueError(f"PayPal cancellation failed: {result['message']}")
+            
+            logger.info(f"PayPal subscription cancelled: {paypal_subscription_id}")
+            
+            # Mark as cancelled in database but keep active until period end
+            return self._mark_paypal_subscription_cancelled(subscription['id'], subscription)
+            
+        except Exception as e:
+            logger.error(f"Error cancelling PayPal subscription: {str(e)}")
+            raise
+
+    def _mark_subscription_scheduled_for_cancellation(self, subscription_id, subscription):
+        """Mark Razorpay subscription as scheduled for cancellation"""
+        try:
+            conn = self.db.get_connection()
+            cursor = conn.cursor(dictionary=True)
+            
+            current_time_str = datetime.now().isoformat()
+            
+            cursor.execute(f"""
+                UPDATE {DB_TABLE_USER_SUBSCRIPTIONS}
+                SET metadata = JSON_MERGE_PATCH(IFNULL(metadata, '{{}}'), %s), 
+                    updated_at = NOW()
+                WHERE id = %s
+            """, (json.dumps({
+                'cancellation_scheduled': True,
+                'cancelled_at': current_time_str,
+                'cancellation_type': 'end_of_cycle'
+            }), subscription_id))
+            
+            conn.commit()
+            cursor.close()
+            conn.close()
+            
+            return {
+                "id": subscription_id,
+                "status": "active",  # Status remains active
+                "cancellation_scheduled": True,
+                "cancellation_type": "end_of_cycle",
+                "end_date": subscription.get('current_period_end').isoformat() if subscription.get('current_period_end') else None,
+                "message": "Subscription will remain active until the end of the current billing period"
+            }
+            
+        except Exception as e:
+            logger.error(f"Error marking subscription scheduled for cancellation: {str(e)}")
+            raise
+
+    def _mark_paypal_subscription_cancelled(self, subscription_id, subscription):
+        """Mark PayPal subscription as cancelled but keep access until period end"""
+        try:
+            conn = self.db.get_connection()
+            cursor = conn.cursor(dictionary=True)
+            
+            current_time_str = datetime.now().isoformat()
+            
+            cursor.execute(f"""
+                UPDATE {DB_TABLE_USER_SUBSCRIPTIONS}
+                SET metadata = JSON_MERGE_PATCH(IFNULL(metadata, '{{}}'), %s), 
+                    updated_at = NOW()
+                WHERE id = %s
+            """, (json.dumps({
+                'paypal_cancelled': True,
+                'cancelled_at': current_time_str,
+                'cancellation_type': 'immediate_with_access'
+            }), subscription_id))
+            
+            conn.commit()
+            cursor.close()
+            conn.close()
+            
+            return {
+                "id": subscription_id,
+                "status": "active",  # Keep active until period end
+                "paypal_cancelled": True,
+                "cancellation_type": "immediate_with_access",
+                "end_date": subscription.get('current_period_end').isoformat() if subscription.get('current_period_end') else None,
+                "message": "PayPal subscription cancelled. Access continues until end of billing period."
+            }
+            
+        except Exception as e:
+            logger.error(f"Error marking PayPal subscription cancelled: {str(e)}")
+            raise
 
 payment_service = PaymentService()
