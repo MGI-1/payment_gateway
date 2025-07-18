@@ -126,7 +126,6 @@ class PaymentService:
             cursor = conn.cursor(dictionary=True)
             
             # Start transaction for free subscription
-            conn.begin()
             
             try:
                 if existing_subscription:
@@ -271,9 +270,6 @@ class PaymentService:
             conn = self.db.get_connection()
             cursor = conn.cursor(dictionary=True)
             
-            # # Start focused transaction
-            # conn.begin()
-            
             try:
                 # Generate IDs
                 subscription_id = generate_id('sub_')
@@ -396,8 +392,6 @@ class PaymentService:
         try:
             conn = self.db.get_connection()
             cursor = conn.cursor(dictionary=True)
-            
-            conn.begin()
             
             try:
                 # Calculate subscription period
@@ -966,8 +960,6 @@ class PaymentService:
            conn = self.db.get_connection()
            cursor = conn.cursor(dictionary=True)
            
-           conn.begin()
-           
            try:
                # Update subscription status
                cursor.execute(f"""
@@ -1259,8 +1251,6 @@ class PaymentService:
        try:
            conn = self.db.get_connection()
            cursor = conn.cursor(dictionary=True)
-           
-           conn.begin()
            
            try:
                # Calculate subscription period
