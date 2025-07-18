@@ -39,6 +39,10 @@ CREATE TABLE `user_subscriptions` (
   KEY `user_id` (`user_id`),
   KEY `plan_id` (`plan_id`),
   CONSTRAINT `user_subscriptions_ibfk_1` FOREIGN KEY (`plan_id`) REFERENCES `subscription_plans` (`id`)
+  CREATE INDEX `idx_user_subscriptions_user_app` ON `user_subscriptions` (`user_id`, `app_id`);
+  CREATE INDEX `idx_user_subscriptions_status` ON `user_subscriptions` (`status`);
+  CREATE INDEX `idx_user_subscriptions_razorpay` ON `user_subscriptions` (`razorpay_subscription_id`);
+  CREATE INDEX `idx_user_subscriptions_paypal` ON `user_subscriptions` (`paypal_subscription_id`);
 );
 
 CREATE TABLE `paypal_webhook_events` (
@@ -118,12 +122,18 @@ CREATE TABLE `resource_usage` (
 CREATE TABLE `subscription_events_log` (
   `id` int NOT NULL AUTO_INCREMENT,
   `event_type` varchar(100) NOT NULL,
-  `razorpay_entity_id` varchar(255) DEFAULT NULL,
+  `entity_id` varchar(255) DEFAULT NULL,
+  `provider` varchar(20) NOT NULL DEFAULT 'razorpay',
   `user_id` varchar(255) DEFAULT NULL,
   `data` json DEFAULT NULL,
   `processed` tinyint(1) DEFAULT '0',
   `created_at` datetime DEFAULT CURRENT_TIMESTAMP,
-  PRIMARY KEY (`id`)
+  PRIMARY KEY (`id`),
+  KEY `idx_entity_id` (`entity_id`),
+  KEY `idx_provider` (`provider`),
+  KEY `idx_user_id` (`user_id`),
+  KEY `idx_event_type` (`event_type`),
+  KEY `idx_processed` (`processed`)
 );
 
 -- Add new audit trail table
@@ -153,10 +163,11 @@ CREATE TABLE `webhook_events_processed` (
 );
 
 -- Add addon purchase table
+-- Create resource_addons table with matching character set/collation
 CREATE TABLE `resource_addons` (
   `id` varchar(64) NOT NULL,
   `user_id` varchar(255) NOT NULL,
-  `subscription_id` varchar(64) NOT NULL,
+  `subscription_id` varchar(64) CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci NOT NULL,
   `app_id` varchar(50) NOT NULL,
   `addon_type` varchar(50) NOT NULL,
   `quantity` int NOT NULL,
@@ -174,4 +185,4 @@ CREATE TABLE `resource_addons` (
   KEY `app_id` (`app_id`),
   KEY `billing_period` (`billing_period_start`, `billing_period_end`),
   CONSTRAINT `resource_addons_ibfk_1` FOREIGN KEY (`subscription_id`) REFERENCES `user_subscriptions` (`id`)
-);
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci;

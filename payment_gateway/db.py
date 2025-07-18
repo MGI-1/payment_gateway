@@ -56,21 +56,14 @@ class DatabaseManager:
             conn = self.get_connection()
             cursor = conn.cursor()
             
-            if provider == 'razorpay':
-                razorpay_entity_id = entity_id
-                paypal_entity_id = None
-            else:
-                razorpay_entity_id = None
-                paypal_entity_id = entity_id
-            
             # Convert data to JSON string if it's a dict
             data_json = json.dumps(data) if isinstance(data, dict) else data
             
             cursor.execute(f'''
                 INSERT INTO {DB_TABLE_SUBSCRIPTION_EVENTS}
-                (event_type, razorpay_entity_id, user_id, data, processed)
-                VALUES (%s, %s, %s, %s, %s)
-            ''', (event_type, razorpay_entity_id, user_id, data_json, processed))
+                (event_type, entity_id, provider, user_id, data, processed, created_at)
+                VALUES (%s, %s, %s, %s, %s, %s, NOW())
+            ''', (event_type, entity_id, provider, user_id, data_json, processed))
             
             conn.commit()
             cursor.close()
@@ -82,7 +75,7 @@ class DatabaseManager:
             logger.error(f"Error logging event: {str(e)}")
             logger.error(traceback.format_exc())
             return False
-    
+        
     def log_subscription_action(self, subscription_id, action_type, details, initiated_by='system'):
         """Log subscription changes for audit trail"""
         try:
