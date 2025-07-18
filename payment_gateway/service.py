@@ -271,8 +271,8 @@ class PaymentService:
             conn = self.db.get_connection()
             cursor = conn.cursor(dictionary=True)
             
-            # Start focused transaction
-            conn.begin()
+            # # Start focused transaction
+            # conn.begin()
             
             try:
                 # Generate IDs
