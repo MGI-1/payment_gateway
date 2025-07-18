@@ -45,24 +45,6 @@ CREATE TABLE `user_subscriptions` (
   CREATE INDEX `idx_user_subscriptions_paypal` ON `user_subscriptions` (`paypal_subscription_id`);
 );
 
-CREATE TABLE `paypal_webhook_events` (
-  `id` int NOT NULL AUTO_INCREMENT,
-  `event_id` varchar(100) NOT NULL,
-  `event_type` varchar(100) NOT NULL,
-  `subscription_id` varchar(100) DEFAULT NULL,
-  `paypal_subscription_id` varchar(100) DEFAULT NULL,
-  `status` varchar(50) DEFAULT NULL,
-  `processed` tinyint(1) DEFAULT '0',
-  `webhook_data` json DEFAULT NULL,
-  `error` text,
-  `created_at` datetime DEFAULT CURRENT_TIMESTAMP,
-  `processed_at` datetime DEFAULT NULL,
-  PRIMARY KEY (`id`),
-  UNIQUE KEY `event_id` (`event_id`),
-  KEY `paypal_subscription_id` (`paypal_subscription_id`),
-  KEY `processed` (`processed`,`created_at`)
-);
-
 CREATE TABLE `paypal_access_tokens` (
   `id` int NOT NULL AUTO_INCREMENT,
   `access_token` text NOT NULL,
