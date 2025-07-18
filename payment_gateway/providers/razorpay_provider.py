@@ -71,11 +71,11 @@ class RazorpayProvider:
                 notes.update(additional_notes)
             
             # DEBUG: Log exactly what we're sending to Razorpay
-            logger.error(f"[RAZORPAY DEBUG] customer_info received: {customer_info}")
-            logger.error(f"[RAZORPAY DEBUG] customer_info types: {[(k, type(v)) for k, v in customer_info.items()]}")
-            logger.error(f"[RAZORPAY DEBUG] app_id: {app_id}, type: {type(app_id)}")
-            logger.error(f"[RAZORPAY DEBUG] notes being sent: {notes}")
-            logger.error(f"[RAZORPAY DEBUG] notes types: {[(k, type(v)) for k, v in notes.items()]}")
+            print(f"[RAZORPAY DEBUG] customer_info received: {customer_info}")
+            print(f"[RAZORPAY DEBUG] customer_info types: {[(k, type(v)) for k, v in customer_info.items()]}")
+            print(f"[RAZORPAY DEBUG] app_id: {app_id}, type: {type(app_id)}")
+            print(f"[RAZORPAY DEBUG] notes being sent: {notes}")
+            print(f"[RAZORPAY DEBUG] notes types: {[(k, type(v)) for k, v in notes.items()]}")
             
             # Create the Razorpay subscription
             subscription_data = {
@@ -86,7 +86,7 @@ class RazorpayProvider:
                 'notes': notes
             }
             
-            logger.error(f"[RAZORPAY DEBUG] Full subscription_data: {subscription_data}")    
+            print(f"[RAZORPAY DEBUG] Full subscription_data: {subscription_data}")    
             logger.info(f"Creating Razorpay subscription for user {user_id} with plan {plan_id}")
             razorpay_subscription = self.client.subscription.create(subscription_data)
             
