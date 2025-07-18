@@ -206,7 +206,6 @@ class PaymentService:
             cursor = conn.cursor(dictionary=True)
             
             cursor.execute("SELECT google_uid, email, display_name FROM users WHERE id = %s OR google_uid = %s", (user_id, user_id))
-            cursor.execute("SELECT google_uid, email, display_name FROM users WHERE id = %s OR google_uid = %s", (user_id, user_id))
             user = cursor.fetchone()
             
             cursor.close()
@@ -229,13 +228,20 @@ class PaymentService:
             if gateway == 'razorpay':
                 gateway_plan_id = plan.get('razorpay_plan_id') or plan['id']
                 
+                # DEBUG: Log the user object and what we're about to pass
+                print(f"[SERVICE DEBUG] user object from database: {user}")
+                print(f"[SERVICE DEBUG] user object types: {[(k, type(v)) for k, v in user.items()] if user else 'None'}")
+                print(f"[SERVICE DEBUG] app_id: {app_id}, type: {type(app_id)}")
+                
+                customer_info = {'user_id': user['google_uid'], 'email': user.get('email'), 'name': user.get('display_name')}
+                print(f"[SERVICE DEBUG] customer_info being passed: {customer_info}")
+                print(f"[SERVICE DEBUG] customer_info types: {[(k, type(v)) for k, v in customer_info.items()]}")
+                
                 response = self.razorpay.create_subscription(
                     gateway_plan_id,
-                    {'user_id': user['google_uid'], 'email': user.get('email'), 'name': user.get('display_name')},
-                    {'user_id': user['google_uid'], 'email': user.get('email'), 'name': user.get('display_name')},
+                    customer_info,
                     app_id
-                )
-                
+                )    
                 if response.get('error'):
                     raise ValueError(response.get('message', 'Failed to create Razorpay subscription'))
                 
