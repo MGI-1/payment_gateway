@@ -206,7 +206,6 @@ class PaymentService:
             cursor = conn.cursor(dictionary=True)
             
             cursor.execute("SELECT google_uid, email, display_name FROM users WHERE id = %s OR google_uid = %s", (user_id, user_id))
-            cursor.execute("SELECT google_uid, email, display_name FROM users WHERE id = %s OR google_uid = %s", (user_id, user_id))
             user = cursor.fetchone()
             
             cursor.close()
@@ -231,7 +230,6 @@ class PaymentService:
                 
                 response = self.razorpay.create_subscription(
                     gateway_plan_id,
-                    {'user_id': user['google_uid'], 'email': user.get('email'), 'name': user.get('display_name')},
                     {'user_id': user['google_uid'], 'email': user.get('email'), 'name': user.get('display_name')},
                     app_id
                 )
