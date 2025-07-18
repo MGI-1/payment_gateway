@@ -228,12 +228,20 @@ class PaymentService:
             if gateway == 'razorpay':
                 gateway_plan_id = plan.get('razorpay_plan_id') or plan['id']
                 
+                # DEBUG: Log the user object and what we're about to pass
+                logger.error(f"[SERVICE DEBUG] user object from database: {user}")
+                logger.error(f"[SERVICE DEBUG] user object types: {[(k, type(v)) for k, v in user.items()] if user else 'None'}")
+                logger.error(f"[SERVICE DEBUG] app_id: {app_id}, type: {type(app_id)}")
+                
+                customer_info = {'user_id': user['google_uid'], 'email': user.get('email'), 'name': user.get('display_name')}
+                logger.error(f"[SERVICE DEBUG] customer_info being passed: {customer_info}")
+                logger.error(f"[SERVICE DEBUG] customer_info types: {[(k, type(v)) for k, v in customer_info.items()]}")
+                
                 response = self.razorpay.create_subscription(
                     gateway_plan_id,
-                    {'user_id': user['google_uid'], 'email': user.get('email'), 'name': user.get('display_name')},
+                    customer_info,
                     app_id
-                )
-                
+                )    
                 if response.get('error'):
                     raise ValueError(response.get('message', 'Failed to create Razorpay subscription'))
                 
