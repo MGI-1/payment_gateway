@@ -385,7 +385,7 @@ def init_payment_routes(app, payment_service):
             new_plan_id = data.get('new_plan_id')
             app_id = data.get('app_id', 'marketfit')
             
-            logger.info(f"[UPGRADE] Params: user={user_id}, sub={subscription_id}, plan={new_plan_id}")
+            logger.info(f"[UPGRADE2] Params: user={user_id}, sub={subscription_id}, plan={new_plan_id}")
             
             if not all([user_id, subscription_id, new_plan_id]):
                 logger.info("[UPGRADE] Missing required parameters")

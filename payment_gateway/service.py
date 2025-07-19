@@ -2586,7 +2586,7 @@ class PaymentService:
             
             logger.info("[UPGRADE] Calling Razorpay update API")
             # Use Razorpay's update subscription API
-            response = self.razorpay.client.subscription.update(razorpay_subscription_id, {
+            response = self.razorpay.client.subscription.edit(razorpay_subscription_id, {
                 'plan_id': new_plan_id,
                 'prorate': True
             })
