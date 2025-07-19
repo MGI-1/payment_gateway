@@ -385,7 +385,7 @@ def init_payment_routes(app, payment_service):
             new_plan_id = data.get('new_plan_id')
             app_id = data.get('app_id', 'marketfit')
             
-            logger.info(f"[UPGRADE2] Params: user={user_id}, sub={subscription_id}, plan={new_plan_id}")
+            logger.info(f"[UPGRADE3] Params: user={user_id}, sub={subscription_id}, plan={new_plan_id}")
             
             if not all([user_id, subscription_id, new_plan_id]):
                 logger.info("[UPGRADE] Missing required parameters")
@@ -394,6 +394,14 @@ def init_payment_routes(app, payment_service):
             logger.info("[UPGRADE] Calling payment_service.upgrade_subscription")
             result = payment_service.upgrade_subscription(user_id, subscription_id, new_plan_id, app_id)
             logger.info("[UPGRADE] Payment service returned successfully")
+            
+            # Check if it's a UPI limitation error
+            if result.get('error_type') == 'upi_upgrade_not_supported':
+                return jsonify({
+                    'error': 'UPI upgrade not supported',
+                    'error_type': 'upi_upgrade_not_supported',
+                    'message': result.get('message')
+                }), 422  # Use 422 for business logic errors
             
             return jsonify({'result': result})
             
