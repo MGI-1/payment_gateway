@@ -177,16 +177,6 @@ def calculate_advanced_proration(current_plan, new_plan, billing_cycle_info, res
     """
     Calculate proration using price difference method (Approach A)
     Use HIGHER of time consumed % or resource consumed % 
-    
-    Args:
-        current_plan: Current subscription plan
-        new_plan: New subscription plan
-        billing_cycle_info: Billing cycle timing data
-        resource_info: Resource utilization data
-        minimum_charge: Minimum proration charge
-        
-    Returns:
-        dict: Proration calculation result
     """
     time_consumed_pct = 1 - billing_cycle_info['time_factor']
     resource_consumed_pct = resource_info['base_plan_consumed_pct']
@@ -195,8 +185,12 @@ def calculate_advanced_proration(current_plan, new_plan, billing_cycle_info, res
     billing_cycle_consumed_pct = max(time_consumed_pct, resource_consumed_pct)
     remaining_billing_cycle_pct = 1 - billing_cycle_consumed_pct
     
+    # Convert Decimal to float to fix the multiplication error
+    current_amount = float(current_plan['amount'])
+    new_amount = float(new_plan['amount'])
+    
     # Standard approach: Price difference × remaining percentage
-    price_difference = new_plan['amount'] - current_plan['amount']
+    price_difference = new_amount - current_amount
     
     if price_difference <= 0:
         # Downgrade - not supported, return message
@@ -215,7 +209,7 @@ def calculate_advanced_proration(current_plan, new_plan, billing_cycle_info, res
         # Apply minimum charge for upgrades
         if 0 < prorated_amount < minimum_charge:
             prorated_amount = minimum_charge
-    
+
     return {
         'prorated_amount': round(prorated_amount, 2),
         'price_difference': price_difference,
