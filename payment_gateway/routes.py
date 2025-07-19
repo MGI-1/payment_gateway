@@ -378,21 +378,27 @@ def init_payment_routes(app, payment_service):
     def upgrade_subscription():
         """Upgrade a subscription to a higher plan"""
         try:
+            logger.info("[UPGRADE] Route started")
             data = request.json
             user_id = data.get('user_id')
             subscription_id = data.get('subscription_id')
             new_plan_id = data.get('new_plan_id')
             app_id = data.get('app_id', 'marketfit')
             
+            logger.info(f"[UPGRADE] Params: user={user_id}, sub={subscription_id}, plan={new_plan_id}")
+            
             if not all([user_id, subscription_id, new_plan_id]):
+                logger.info("[UPGRADE] Missing required parameters")
                 return jsonify({'error': 'User ID, subscription ID, and new plan ID are required'}), 400
             
+            logger.info("[UPGRADE] Calling payment_service.upgrade_subscription")
             result = payment_service.upgrade_subscription(user_id, subscription_id, new_plan_id, app_id)
+            logger.info("[UPGRADE] Payment service returned successfully")
+            
             return jsonify({'result': result})
             
         except Exception as e:
-            logger.error(f"Error upgrading subscription: {str(e)}")
-            logger.error(traceback.format_exc())
+            logger.info(f"[UPGRADE] Route exception: {str(e)}")
             return jsonify({'error': str(e)}), 500
 
     @payment_bp.route('/downgrade-request', methods=['POST'])

@@ -11,7 +11,6 @@ from .providers.razorpay_provider import RazorpayProvider
 from .providers.paypal_provider import PayPalProvider
 from .utils.helpers import generate_id, calculate_period_end, calculate_billing_cycle_info, calculate_resource_utilization, calculate_advanced_proration,parse_json_field
 from .config import setup_logging, DB_TABLE_SUBSCRIPTION_PLANS, DB_TABLE_USER_SUBSCRIPTIONS, DB_TABLE_RESOURCE_USAGE
-from .providers.paypal_provider import PayPalProvider
 logger = logging.getLogger('payment_gateway')
 
 class PaymentService:
@@ -229,13 +228,13 @@ class PaymentService:
                 gateway_plan_id = plan.get('razorpay_plan_id') or plan['id']
                 
                 # DEBUG: Log the user object and what we're about to pass
-                print(f"[SERVICE DEBUG] user object from database: {user}")
-                print(f"[SERVICE DEBUG] user object types: {[(k, type(v)) for k, v in user.items()] if user else 'None'}")
-                print(f"[SERVICE DEBUG] app_id: {app_id}, type: {type(app_id)}")
+                logger.info(f"[SERVICE DEBUG] user object from database: {user}")
+                logger.info(f"[SERVICE DEBUG] user object types: {[(k, type(v)) for k, v in user.items()] if user else 'None'}")
+                logger.info(f"[SERVICE DEBUG] app_id: {app_id}, type: {type(app_id)}")
                 
                 customer_info = {'user_id': user['google_uid'], 'email': user.get('email'), 'name': user.get('display_name')}
-                print(f"[SERVICE DEBUG] customer_info being passed: {customer_info}")
-                print(f"[SERVICE DEBUG] customer_info types: {[(k, type(v)) for k, v in customer_info.items()]}")
+                logger.info(f"[SERVICE DEBUG] customer_info being passed: {customer_info}")
+                logger.info(f"[SERVICE DEBUG] customer_info types: {[(k, type(v)) for k, v in customer_info.items()]}")
                 
                 response = self.razorpay.create_subscription(
                     gateway_plan_id,
@@ -2484,73 +2483,76 @@ class PaymentService:
     def upgrade_subscription(self, user_id, subscription_id, new_plan_id, app_id):
         """
         Upgrade subscription with advanced proration
-        
-        Args:
-            user_id: The user's google_uid
-            subscription_id: The subscription ID
-            new_plan_id: New plan ID to upgrade to
-            app_id: Application ID
-            
-        Returns:
-            dict: Upgrade result
         """
-        logger.info(f"Upgrading subscription {subscription_id} to plan {new_plan_id}")
+        logger.info(f"[UPGRADE] Service started: user={user_id}, sub={subscription_id}, plan={new_plan_id}")
         
         try:
             # Phase 1: Get current state
+            logger.info("[UPGRADE] Phase 1: Getting subscription details")
             subscription = self._get_subscription_details(subscription_id)
             if not subscription:
                 raise ValueError("Subscription not found")
-            
+
+            logger.info("[UPGRADE] Phase 1: Checking user ownership")
             if subscription['user_id'] != user_id:
                 raise ValueError("Subscription does not belong to user")
-            
+
+            logger.info("[UPGRADE] Phase 1: Getting current plan")
             current_plan = self._get_plan(subscription['plan_id'])
+            logger.info("[UPGRADE] Phase 1: Getting new plan")
             new_plan = self._get_plan(new_plan_id)
-            
+
             if not current_plan or not new_plan:
                 raise ValueError("Plan not found")
-            
+
+            logger.info("[UPGRADE] Phase 2: Getting usage data")
             # Phase 2: Calculate proration
             usage_data = self.get_current_usage(user_id, subscription_id, app_id)
             
             if not usage_data:
                 raise ValueError("Usage data not found")
-            
+
+            logger.info("[UPGRADE] Phase 2: Calculating billing cycle")
             billing_cycle_info = calculate_billing_cycle_info(
                 usage_data['billing_period_start'],
                 usage_data['billing_period_end']
             )
-            
+
+            logger.info("[UPGRADE] Phase 2: Calculating resource utilization")
             resource_info = calculate_resource_utilization(
                 usage_data,
                 current_plan['features'],
                 app_id
             )
-            
+
+            logger.info("[UPGRADE] Phase 2: Calculating proration")
             proration_result = calculate_advanced_proration(
                 current_plan,
                 new_plan,
                 billing_cycle_info,
                 resource_info
             )
-            
+
             # Check if it's a downgrade
             if proration_result.get('is_downgrade'):
                 return proration_result
-            
+
+            logger.info("[UPGRADE] Phase 3: Starting gateway upgrade")
             # Phase 3: Handle gateway-specific upgrade
             if subscription.get('razorpay_subscription_id'):
+                logger.info("[UPGRADE] Using Razorpay upgrade")
                 result = self._upgrade_razorpay_subscription(
                     subscription, new_plan_id, proration_result
                 )
             elif subscription.get('paypal_subscription_id'):
+                logger.info("[UPGRADE] Using PayPal upgrade")
                 result = self._upgrade_paypal_subscription(
                     subscription, new_plan_id, proration_result
                 )
             else:
                 raise ValueError("No gateway subscription ID found")
-            
+
+            logger.info("[UPGRADE] Phase 4: Logging upgrade action")
             # Phase 4: Log the upgrade
             self.db.log_subscription_action(
                 subscription_id,
@@ -2563,31 +2565,42 @@ class PaymentService:
                 },
                 f'user_{user_id}'
             )
-            
+
+            logger.info("[UPGRADE] Upgrade completed successfully")
             return result
-            
+
         except Exception as e:
-            logger.error(f"Error upgrading subscription: {str(e)}")
-            logger.error(traceback.format_exc())
+            logger.info(f"[UPGRADE] Service exception: {str(e)}")
             raise
 
     def _upgrade_razorpay_subscription(self, subscription, new_plan_id, proration_result):
         """Handle Razorpay subscription upgrade"""
         try:
+            logger.info("[UPGRADE] Razorpay upgrade started")
             razorpay_subscription_id = subscription['razorpay_subscription_id']
             
+            logger.info("[UPGRADE] Getting new plan details")
+            new_plan = self._get_plan(new_plan_id)
+            if not new_plan:
+                raise ValueError(f"Plan {new_plan_id} not found")
+            
+            logger.info("[UPGRADE] Calling Razorpay update API")
             # Use Razorpay's update subscription API
             response = self.razorpay.client.subscription.update(razorpay_subscription_id, {
                 'plan_id': new_plan_id,
                 'prorate': True
             })
             
+            logger.info("[UPGRADE] Razorpay API call completed")
+            
             if 'error' in response:
                 raise ValueError(f"Razorpay upgrade failed: {response.get('error', {}).get('description', 'Unknown error')}")
             
+            logger.info("[UPGRADE] Updating local database")
             # Update local database
             self._update_subscription_plan(subscription['id'], new_plan_id)
             
+            logger.info("[UPGRADE] Initializing resource quota")
             # Update quotas immediately
             self.initialize_resource_quota(
                 subscription['user_id'], 
@@ -2595,6 +2608,7 @@ class PaymentService:
                 subscription['app_id']
             )
             
+            logger.info("[UPGRADE] Razorpay upgrade completed successfully")
             return {
                 'success': True,
                 'subscription_id': subscription['id'],
@@ -2605,7 +2619,7 @@ class PaymentService:
             }
             
         except Exception as e:
-            logger.error(f"Error upgrading Razorpay subscription: {str(e)}")
+            logger.info(f"[UPGRADE] Razorpay upgrade exception: {str(e)}")
             raise
 
     def _upgrade_paypal_subscription(self, subscription, new_plan_id, proration_result):
