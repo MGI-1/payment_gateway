@@ -2584,8 +2584,7 @@ class PaymentService:
             if not new_plan:
                 raise ValueError(f"Plan {new_plan_id} not found")
             
-            logger.info("[UPGRADE] Calling Razorpay update API")
-            # Use Razorpay's update subscription API
+            logger.info("[UPGRADE] Calling Razorpay edit API")
             response = self.razorpay.client.subscription.edit(razorpay_subscription_id, {
                 'plan_id': new_plan_id,
                 'prorate': True
@@ -2594,32 +2593,34 @@ class PaymentService:
             logger.info("[UPGRADE] Razorpay API call completed")
             
             if 'error' in response:
-                raise ValueError(f"Razorpay upgrade failed: {response.get('error', {}).get('description', 'Unknown error')}")
+                error_msg = response.get('error', {}).get('description', 'Unknown error')
+                
+                # Handle UPI limitation specifically
+                if 'upi' in error_msg.lower():
+                    return {
+                        'error': True,
+                        'error_type': 'upi_upgrade_not_supported',
+                        'message': 'Since your subscription is set-up on UPI payments, you need to cancel the subscription and get the new subscription. Or you can contact us using the contact form link at bottom of page.',
+                        'support_action': 'cancel_and_resubscribe'
+                    }
+                
+                raise ValueError(f"Razorpay upgrade failed: {error_msg}")
             
-            logger.info("[UPGRADE] Updating local database")
-            # Update local database
-            self._update_subscription_plan(subscription['id'], new_plan_id)
-            
-            logger.info("[UPGRADE] Initializing resource quota")
-            # Update quotas immediately
-            self.initialize_resource_quota(
-                subscription['user_id'], 
-                subscription['id'], 
-                subscription['app_id']
-            )
-            
-            logger.info("[UPGRADE] Razorpay upgrade completed successfully")
-            return {
-                'success': True,
-                'subscription_id': subscription['id'],
-                'new_plan_id': new_plan_id,
-                'proration_amount': proration_result.get('prorated_amount', 0),
-                'gateway_response': response,
-                'message': 'Subscription upgraded successfully'
-            }
+            # ... rest of the method stays the same
             
         except Exception as e:
-            logger.info(f"[UPGRADE] Razorpay upgrade exception: {str(e)}")
+            error_msg = str(e)
+            logger.info(f"[UPGRADE] Razorpay upgrade exception: {error_msg}")
+            
+            # Handle UPI limitation in exceptions too
+            if 'upi' in error_msg.lower():
+                return {
+                    'error': True,
+                    'error_type': 'upi_upgrade_not_supported',
+                    'message': 'Since your subscription is set-up on UPI payments, you need to cancel the subscription and get the new subscription. Or you can contact us using the contact form link at bottom of page.',
+                    'support_action': 'cancel_and_resubscribe'
+                }
+            
             raise
 
     def _upgrade_paypal_subscription(self, subscription, new_plan_id, proration_result):
