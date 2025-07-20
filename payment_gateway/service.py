@@ -2480,9 +2480,75 @@ class PaymentService:
             logger.error(f"Error getting current usage: {str(e)}")
             return None
 
+    def _should_block_upgrade(self, current_plan, billing_cycle_info, resource_info):
+        """
+        Check if upgrade should be blocked based on billing period and resource consumption
+        
+        Args:
+            current_plan: Current subscription plan
+            billing_cycle_info: Billing cycle timing information  
+            resource_info: Resource utilization data
+            
+        Returns:
+            dict: Block decision with reason
+        """
+        try:
+            # Check if current plan has billing period > 6 months
+            interval = current_plan.get('interval', 'month')
+            interval_count = current_plan.get('interval_count', 1)
+            
+            # Calculate total months
+            if interval == 'year':
+                total_months = interval_count * 12
+            elif interval == 'month':
+                total_months = interval_count
+            else:
+                total_months = 1  # Default to monthly
+            
+            # Only apply blocking logic if billing period > 6 months
+            if total_months <= 6:
+                return {
+                    'should_block': False,
+                    'reason': 'billing_period_6_months_or_less'
+                }
+            
+            # Get consumption percentages
+            time_consumed_pct = 1 - billing_cycle_info['time_factor']
+            resource_consumed_pct = resource_info['base_plan_consumed_pct']
+            
+            # Check if resource consumption is 20% or more higher than time consumption
+            consumption_difference = resource_consumed_pct - time_consumed_pct
+            
+            if consumption_difference >= 0.20:  # 20% or more difference
+                return {
+                    'should_block': True,
+                    'reason': 'high_resource_consumption',
+                    'time_consumed_pct': time_consumed_pct,
+                    'resource_consumed_pct': resource_consumed_pct,
+                    'consumption_difference': consumption_difference,
+                    'billing_period_months': total_months
+                }
+            
+            return {
+                'should_block': False,
+                'reason': 'consumption_within_limits',
+                'time_consumed_pct': time_consumed_pct,
+                'resource_consumed_pct': resource_consumed_pct,
+                'consumption_difference': consumption_difference
+            }
+            
+        except Exception as e:
+            logger.error(f"Error checking upgrade block conditions: {str(e)}")
+            # Default to allowing upgrade if check fails
+            return {
+                'should_block': False,
+                'reason': 'error_in_check',
+                'error': str(e)
+            }
+
     def upgrade_subscription(self, user_id, subscription_id, new_plan_id, app_id):
         """
-        Upgrade subscription with advanced proration
+        Upgrade subscription with blocking logic for high resource consumption
         """
         logger.info(f"[UPGRADE] Service started: user={user_id}, sub={subscription_id}, plan={new_plan_id}")
         
@@ -2506,7 +2572,7 @@ class PaymentService:
                 raise ValueError("Plan not found")
 
             logger.info("[UPGRADE] Phase 2: Getting usage data")
-            # Phase 2: Calculate proration
+            # Phase 2: Calculate proration and check blocking conditions
             usage_data = self.get_current_usage(user_id, subscription_id, app_id)
             
             if not usage_data:
@@ -2537,8 +2603,40 @@ class PaymentService:
             if proration_result.get('is_downgrade'):
                 return proration_result
 
+            logger.info("[UPGRADE] Phase 2: Checking upgrade blocking conditions")
+            # NEW: Check if upgrade should be blocked
+            block_check = self._should_block_upgrade(current_plan, billing_cycle_info, resource_info)
+            
+            if block_check['should_block']:
+                # Log the blocked upgrade attempt
+                self.db.log_subscription_action(
+                    subscription_id,
+                    'upgrade_blocked',
+                    {
+                        'old_plan_id': current_plan['id'],
+                        'requested_plan_id': new_plan_id,
+                        'block_reason': block_check['reason'],
+                        'block_details': block_check,
+                        'proration_details': proration_result
+                    },
+                    f'user_{user_id}'
+                )
+                
+                return {
+                    'error': True,
+                    'error_type': 'upgrade_blocked_high_consumption',
+                    'message': 'Your upgrade request requires manual review due to high resource usage. Please contact our support team who will assist you with the upgrade process.',
+                    'contact_info': 'support@yourcompany.com',
+                    'details': {
+                        'time_consumed': f"{block_check['time_consumed_pct']:.1%}",
+                        'resources_consumed': f"{block_check['resource_consumed_pct']:.1%}",
+                        'billing_period_months': block_check['billing_period_months']
+                    },
+                    'action_required': 'contact_support'
+                }
+
             logger.info("[UPGRADE] Phase 3: Starting gateway upgrade")
-            # Phase 3: Handle gateway-specific upgrade
+            # Phase 3: Handle gateway-specific upgrade (WITHOUT proration)
             if subscription.get('razorpay_subscription_id'):
                 logger.info("[UPGRADE] Using Razorpay upgrade")
                 result = self._upgrade_razorpay_subscription(
@@ -2553,15 +2651,18 @@ class PaymentService:
                 raise ValueError("No gateway subscription ID found")
 
             logger.info("[UPGRADE] Phase 4: Logging upgrade action")
-            # Phase 4: Log the upgrade
+            # Phase 4: Log the upgrade with proration details (but not applied)
             self.db.log_subscription_action(
                 subscription_id,
                 'plan_upgrade',
                 {
                     'old_plan_id': current_plan['id'],
                     'new_plan_id': new_plan_id,
-                    'proration_amount': proration_result.get('prorated_amount', 0),
-                    'proration_details': proration_result
+                    'calculated_proration_amount': proration_result.get('prorated_amount', 0),
+                    'proration_details': proration_result,
+                    'block_check_details': block_check,
+                    'proration_applied': False,
+                    'note': 'Upgrade completed without proration - amount calculated for audit only'
                 },
                 f'user_{user_id}'
             )
@@ -2574,7 +2675,7 @@ class PaymentService:
             raise
 
     def _upgrade_razorpay_subscription(self, subscription, new_plan_id, proration_result):
-        """Handle Razorpay subscription upgrade"""
+        """Handle Razorpay subscription upgrade without proration"""
         try:
             logger.info("[UPGRADE] Razorpay upgrade started")
             razorpay_subscription_id = subscription['razorpay_subscription_id']
@@ -2584,10 +2685,10 @@ class PaymentService:
             if not new_plan:
                 raise ValueError(f"Plan {new_plan_id} not found")
             
-            logger.info("[UPGRADE] Calling Razorpay edit API")
+            logger.info("[UPGRADE] Calling Razorpay edit API (without proration)")
+            # Only change the plan, no proration applied
             response = self.razorpay.client.subscription.edit(razorpay_subscription_id, {
-                'plan_id': new_plan_id,
-                'prorate': True
+                'plan_id': new_plan_id
             })
             
             logger.info("[UPGRADE] Razorpay API call completed")
@@ -2606,7 +2707,43 @@ class PaymentService:
                 
                 raise ValueError(f"Razorpay upgrade failed: {error_msg}")
             
-            # ... rest of the method stays the same
+            # Phase 2: Update local database
+            logger.info("[UPGRADE] Updating local subscription record")
+            self._update_subscription_plan(subscription['id'], new_plan_id)
+            
+            # Phase 3: Update quotas immediately  
+            logger.info("[UPGRADE] Updating resource quotas")
+            self.initialize_resource_quota(
+                subscription['user_id'], 
+                subscription['id'], 
+                subscription['app_id']
+            )
+            
+            # Phase 4: Log the upgrade
+            logger.info("[UPGRADE] Logging upgrade completion")
+            self.db.log_subscription_action(
+                subscription['id'],
+                'razorpay_upgrade_completed',
+                {
+                    'razorpay_subscription_id': razorpay_subscription_id,
+                    'new_plan_id': new_plan_id,
+                    'calculated_proration_amount': proration_result.get('prorated_amount', 0),
+                    'proration_applied': False,
+                    'razorpay_response': response
+                },
+                f"user_{subscription['user_id']}"
+            )
+            
+            logger.info("[UPGRADE] Razorpay upgrade completed successfully")
+            return {
+                'success': True,
+                'subscription_id': subscription['id'],
+                'new_plan_id': new_plan_id,
+                'calculated_proration_amount': proration_result.get('prorated_amount', 0),
+                'proration_applied': False,
+                'razorpay_response': response,
+                'message': 'Subscription upgraded successfully (no proration applied)'
+            }
             
         except Exception as e:
             error_msg = str(e)
@@ -2624,7 +2761,7 @@ class PaymentService:
             raise
 
     def _upgrade_paypal_subscription(self, subscription, new_plan_id, proration_result):
-        """Handle PayPal subscription upgrade using PayPal API"""
+        """Handle PayPal subscription upgrade without proration"""
         try:
             paypal_subscription_id = subscription['paypal_subscription_id']
             
@@ -2635,11 +2772,11 @@ class PaymentService:
             
             new_paypal_plan_id = new_plan['paypal_plan_id']
             
-            # Phase 1: Update PayPal subscription with proration
+            # Phase 1: Update PayPal subscription WITHOUT proration
             paypal_result = self.paypal.update_subscription(
                 paypal_subscription_id,
                 new_paypal_plan_id,
-                proration_result.get('prorated_amount', 0)
+                proration_amount=0  # No proration applied
             )
             
             if paypal_result.get('error'):
@@ -2663,7 +2800,8 @@ class PaymentService:
                     'paypal_subscription_id': paypal_subscription_id,
                     'new_plan_id': new_plan_id,
                     'new_paypal_plan_id': new_paypal_plan_id,
-                    'proration_amount': proration_result.get('prorated_amount', 0),
+                    'calculated_proration_amount': proration_result.get('prorated_amount', 0),
+                    'proration_applied': False,
                     'paypal_response': paypal_result
                 },
                 f"user_{subscription['user_id']}"
@@ -2673,17 +2811,17 @@ class PaymentService:
                 'success': True,
                 'subscription_id': subscription['id'],
                 'new_plan_id': new_plan_id,
-                'proration_amount': proration_result.get('prorated_amount', 0),
+                'calculated_proration_amount': proration_result.get('prorated_amount', 0),
+                'proration_applied': False,
                 'paypal_result': paypal_result,
                 'approval_url': paypal_result.get('approval_url'),
-                'message': 'PayPal subscription upgraded successfully',
+                'message': 'PayPal subscription upgraded successfully (no proration applied)',
                 'note': 'If approval URL is present, user may need to approve the change'
             }
             
         except Exception as e:
             logger.error(f"Error upgrading PayPal subscription: {str(e)}")
             raise
-
     def _update_subscription_plan(self, subscription_id, new_plan_id):
         """Update subscription plan in database"""
         try:
