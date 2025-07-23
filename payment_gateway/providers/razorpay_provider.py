@@ -6,7 +6,7 @@ import json
 import logging
 import traceback
 from datetime import datetime, timedelta
-from ..config import RAZORPAY_KEY_ID, RAZORPAY_KEY_SECRET
+from ..config import RAZORPAY_KEY_ID, RAZORPAY_KEY_SECRET, WEBHOOK_BASE_URL
 
 logger = logging.getLogger('payment_gateway')
 
@@ -104,6 +104,90 @@ class RazorpayProvider:
                 'error': True,
                 'message': str(e)
             }
+    
+    def create_subscription_with_offer(self, plan_id, customer_info, app_id, discount_offer_pct=None, additional_notes=None):
+        """Create a subscription with discount offer"""
+        if not self.initialized or not self.client:
+            return {
+                'error': True,
+                'message': 'Razorpay client not initialized'
+            }
+        
+        try:
+            user_id = customer_info.get('user_id')
+            
+            notes = {
+                'user_id': user_id,
+                'app_id': app_id
+            }
+            
+            if additional_notes and isinstance(additional_notes, dict):
+                notes.update(additional_notes)
+            
+            subscription_data = {
+                'plan_id': plan_id,
+                'customer_notify': True,
+                'quantity': 1,
+                'total_count': 12,
+                'notes': notes
+            }
+            
+            # Add discount offer if specified
+            if discount_offer_pct and discount_offer_pct > 0:
+                subscription_data['offer_id'] = f'offer_{discount_offer_pct}pct'
+            
+            logger.info(f"Creating Razorpay subscription with {discount_offer_pct}% discount")
+            razorpay_subscription = self.client.subscription.create(subscription_data)
+            
+            return {
+                'id': razorpay_subscription.get('id'),
+                'status': razorpay_subscription.get('status'),
+                'short_url': razorpay_subscription.get('short_url'),
+                'discount_applied': discount_offer_pct,
+                'data': razorpay_subscription
+            }
+            
+        except Exception as e:
+            logger.error(f"Error creating Razorpay subscription with offer: {str(e)}")
+            return {
+                'error': True,
+                'message': str(e)
+            }
+
+    def create_payment_link(self, invoice_data):
+        """Create a payment link for one-time payments"""
+        if not self.initialized or not self.client:
+            return {'error': True, 'message': 'Razorpay client not initialized'}
+        
+        try:
+            payment_link_data = {
+                'amount': invoice_data['amount'],
+                'currency': invoice_data['currency'],
+                'description': invoice_data['description'],
+                'customer': invoice_data.get('customer', {}),
+                'notify': {
+                    'sms': True,
+                    'email': True
+                },
+                'notes': invoice_data.get('notes', {}),
+                'callback_url': f"{WEBHOOK_BASE_URL}/api/subscriptions/payment-callback",
+                'callback_method': 'get'
+            }
+            
+            payment_link = self.client.payment_link.create(payment_link_data)
+            
+            return {
+                'success': True,
+                'payment_link_id': payment_link.get('id'),
+                'short_url': payment_link.get('short_url'),
+                'status': payment_link.get('status'),
+                'data': payment_link
+            }
+            
+        except Exception as e:
+            logger.error(f"Error creating Razorpay payment link: {str(e)}")
+            return {'error': True, 'message': str(e)}    
+    
     
     def cancel_subscription(self, subscription_id, cancel_at_cycle_end=True):
         """

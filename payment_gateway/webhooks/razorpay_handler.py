@@ -39,6 +39,7 @@ def verify_razorpay_signature(payload, signature):
 def handle_razorpay_webhook(payment_service):
     """
     Handle Razorpay webhook events and update subscription statuses
+    Enhanced to handle payment link events for upgrade flows
     
     Args:
         payment_service: The PaymentService instance
@@ -78,6 +79,59 @@ def handle_razorpay_webhook(payment_service):
             logger.info(f"Razorpay event {event_id} already processed")
             return {'status': 'already_processed'}, 200
         
+        # NEW: Handle payment link events for upgrade flows
+        if event_type == 'payment_link.paid':
+            logger.info("Processing payment_link.paid event")
+            payment_link_data = webhook_data.get('payload', {}).get('payment_link', {}).get('entity', {})
+            payment_data = webhook_data.get('payload', {}).get('payment', {}).get('entity', {})
+            
+            # Check if this payment was for excess resource consumption
+            notes = payment_link_data.get('notes', {})
+            if notes.get('payment_type') == 'excess_consumption':
+                logger.info("Processing excess consumption payment via payment link")
+                subscription_id = notes.get('subscription_id')
+                payment_id = payment_data.get('id')
+                
+                if subscription_id and payment_id:
+                    result = payment_service.handle_additional_payment_completion(payment_id, subscription_id)
+                    
+                    # Mark event as processed
+                    payment_service.db.mark_event_processed(event_id, 'razorpay')
+                    
+                    return {
+                        'status': 'success',
+                        'message': 'Additional payment processed via payment link',
+                        'result': result
+                    }, 200
+                else:
+                    logger.warning("Missing subscription_id or payment_id in payment link webhook")
+        
+        # Enhanced payment.captured event handling
+        elif event_type == 'payment.captured':
+            logger.info("Processing payment.captured event")
+            payment_data = webhook_data.get('payload', {}).get('payment', {}).get('entity', {})
+            notes = payment_data.get('notes', {})
+            
+            # NEW: Check if this is excess consumption payment
+            if notes.get('payment_type') == 'excess_consumption':
+                logger.info("Processing excess consumption payment via payment.captured")
+                subscription_id = notes.get('subscription_id')
+                payment_id = payment_data.get('id')
+                
+                if subscription_id and payment_id:
+                    result = payment_service.handle_additional_payment_completion(payment_id, subscription_id)
+                    
+                    # Mark event as processed
+                    payment_service.db.mark_event_processed(event_id, 'razorpay')
+                    
+                    return {
+                        'status': 'success', 
+                        'message': 'Excess consumption payment processed via payment.captured',
+                        'result': result
+                    }, 200
+                else:
+                    logger.warning("Missing subscription_id or payment_id in payment.captured webhook")
+        
         # Enhanced debugging for subscription events
         if event_type and event_type.startswith('subscription.'):
             subscription_data = webhook_data.get('payload', {}).get('subscription', {})
@@ -99,7 +153,7 @@ def handle_razorpay_webhook(payment_service):
                     logger.info(f"Resetting quota for subscription {subscription.get('id')} after renewal")
                     payment_service.reset_quota_on_renewal(subscription.get('id'))
         
-        # Process the webhook event
+        # Process the webhook event using existing handler
         result = payment_service.handle_webhook(webhook_data, provider='razorpay')
         
         # Mark event as processed

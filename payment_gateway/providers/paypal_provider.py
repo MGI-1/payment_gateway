@@ -363,6 +363,115 @@ class PayPalProvider:
             logger.error(f"Error cancelling PayPal subscription: {str(e)}")
             return {'error': True, 'message': str(e)}
     
+    def update_subscription_plan_only(self, subscription_id, new_plan_id):
+        """Update PayPal subscription plan with authorization check"""
+        if not self.initialized:
+            return {'error': True, 'message': 'PayPal not initialized'}
+        
+        try:
+            revision_data = {
+                "plan_id": new_plan_id,
+                "application_context": {
+                    "user_action": "SUBSCRIBE_NOW",
+                    "return_url": PAYPAL_RETURN_URL,
+                    "cancel_url": PAYPAL_CANCEL_URL
+                }
+            }
+            
+            result = self._make_api_call(
+                f"/v1/billing/subscriptions/{subscription_id}/revise",
+                method="POST",
+                data=revision_data
+            )
+            
+            if result.get('error'):
+                return result
+            
+            approval_url = self._extract_approval_url(result)
+            status = result.get('status', '')
+            
+            approval_reason = None
+            if approval_url:
+                if 'APPROVAL_PENDING' in status:
+                    approval_reason = "PayPal account re-authorization required"
+                elif 'PENDING' in status:
+                    approval_reason = "Card authorization required for new amount"
+                else:
+                    approval_reason = "Additional authorization required"
+            
+            return {
+                'success': True,
+                'requires_approval': approval_url is not None,
+                'approval_url': approval_url,
+                'approval_reason': approval_reason,
+                'status': status,
+                'message': f'Plan updated. {approval_reason}' if approval_url else 'Plan updated successfully.'
+            }
+            
+        except Exception as e:
+            logger.error(f"Error updating PayPal subscription plan: {str(e)}")
+            return {'error': True, 'message': str(e)}
+
+    def create_one_time_payment(self, payment_data):
+        """Create one-time payment order for proration"""
+        if not self.initialized:
+            return {'error': True, 'message': 'PayPal not initialized'}
+        
+        try:
+            order_data = {
+                "intent": "CAPTURE",
+                "purchase_units": [{
+                    "amount": {
+                        "currency_code": payment_data.get('currency', 'USD'),
+                        "value": str(payment_data['amount'])
+                    },
+                    "description": payment_data.get('description', 'Upgrade proration payment'),
+                    "custom_id": f"sub_{payment_data.get('metadata', {}).get('subscription_id')}"
+                }],
+                "application_context": {
+                    "return_url": f"{PAYPAL_RETURN_URL}?type=proration",
+                    "cancel_url": f"{PAYPAL_CANCEL_URL}?type=proration"
+                }
+            }
+            
+            result = self._make_api_call(
+                "/v2/checkout/orders",
+                method="POST",
+                data=order_data
+            )
+            
+            if result.get('error'):
+                return result
+            
+            return {
+                'success': True,
+                'order_id': result.get('id'),
+                'approval_url': self._extract_approval_url(result),
+                'status': result.get('status'),
+                'paypal_response': result
+            }
+            
+        except Exception as e:
+            logger.error(f"Error creating PayPal one-time payment: {str(e)}")
+            return {'error': True, 'message': str(e)}
+
+    def capture_order_payment(self, order_id):
+        """Capture payment for completed order"""
+        if not self.initialized:
+            return {'error': True, 'message': 'PayPal not initialized'}
+        
+        try:
+            result = self._make_api_call(
+                f"/v2/checkout/orders/{order_id}/capture",
+                method="POST"
+            )
+            
+            return result
+            
+        except Exception as e:
+            logger.error(f"Error capturing PayPal order: {str(e)}")
+            return {'error': True, 'message': str(e)}    
+    
     def _extract_approval_url(self, paypal_response):
         """Extract approval URL from PayPal response if present"""
         try:
