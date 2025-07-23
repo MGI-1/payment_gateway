@@ -60,6 +60,7 @@ CREATE TABLE `subscription_invoices` (
   `razorpay_invoice_id` varchar(255) DEFAULT NULL,
   `amount` decimal(10,2) DEFAULT NULL,
   `currency` varchar(10) DEFAULT 'INR',
+  `payment_method` varchar(20) DEFAULT NULL,
   `status` varchar(50) NOT NULL,
   `payment_id` varchar(255) DEFAULT NULL,
   `invoice_date` datetime DEFAULT NULL,
@@ -71,6 +72,7 @@ CREATE TABLE `subscription_invoices` (
   KEY `user_id` (`user_id`),
   CONSTRAINT `subscription_invoices_ibfk_1` FOREIGN KEY (`subscription_id`) REFERENCES `user_subscriptions` (`id`)
 );
+
 
 
 CREATE TABLE `resource_usage` (
@@ -168,3 +170,37 @@ CREATE TABLE `resource_addons` (
   KEY `billing_period` (`billing_period_start`, `billing_period_end`),
   CONSTRAINT `resource_addons_ibfk_1` FOREIGN KEY (`subscription_id`) REFERENCES `user_subscriptions` (`id`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci;
+
+-- Create razorpay_offers table
+CREATE TABLE razorpay_offers (
+    id VARCHAR(50) PRIMARY KEY,
+    discount_percentage INT NOT NULL,
+    payment_method ENUM('upi', 'card') NOT NULL,
+    offer_id VARCHAR(100) NOT NULL,
+    title VARCHAR(100) NOT NULL,
+    status ENUM('enabled', 'disabled') DEFAULT 'enabled',
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    INDEX idx_discount_method (discount_percentage, payment_method)
+);
+
+-- Create manual_refunds table
+CREATE TABLE manual_refunds (
+    id VARCHAR(50) PRIMARY KEY,
+    user_id VARCHAR(100) NOT NULL,
+    subscription_id VARCHAR(100) NOT NULL,
+    refund_amount DECIMAL(10,2) NOT NULL,
+    currency VARCHAR(10) DEFAULT 'INR',
+    original_payment_method VARCHAR(50),
+    status ENUM('scheduled', 'processing', 'completed', 'failed') DEFAULT 'scheduled',
+    reason VARCHAR(255),
+    admin_notes TEXT,
+    processed_by VARCHAR(100),
+    scheduled_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    processed_at TIMESTAMP NULL,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    INDEX idx_user_status (user_id, status),
+    INDEX idx_scheduled_date (scheduled_at),
+    INDEX idx_status (status)
+);

@@ -228,7 +228,54 @@ class RazorpayProvider:
                 'error': True,
                 'message': str(e)
             }
-    
+
+    def create_subscription_with_specific_offer(self, plan_id, customer_info, app_id, offer_id, additional_notes=None):
+        """Create subscription with specific offer ID"""
+        if not self.initialized or not self.client:
+            return {
+                'error': True,
+                'message': 'Razorpay client not initialized'
+            }
+        
+        try:
+            user_id = customer_info.get('user_id')
+            
+            notes = {
+                'user_id': user_id,
+                'app_id': app_id,
+                'offer_id_used': offer_id
+            }
+            
+            if additional_notes and isinstance(additional_notes, dict):
+                notes.update(additional_notes)
+            
+            subscription_data = {
+                'plan_id': plan_id,
+                'customer_notify': True,
+                'quantity': 1,
+                'total_count': 12,
+                'notes': notes,
+                'offer_id': offer_id  # Use the specific offer ID
+            }
+            
+            logger.info(f"Creating Razorpay subscription with specific offer: {offer_id}")
+            razorpay_subscription = self.client.subscription.create(subscription_data)
+            
+            return {
+                'id': razorpay_subscription.get('id'),
+                'status': razorpay_subscription.get('status'),
+                'short_url': razorpay_subscription.get('short_url'),
+                'offer_id_used': offer_id,
+                'data': razorpay_subscription
+            }
+            
+        except Exception as e:
+            logger.error(f"Error creating Razorpay subscription with specific offer: {str(e)}")
+            return {
+                'error': True,
+                'message': str(e)
+            }
+
     def fetch_subscription(self, subscription_id):
         """
         Fetch a subscription from Razorpay

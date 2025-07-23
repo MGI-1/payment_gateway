@@ -588,7 +588,64 @@ def init_payment_routes(app, payment_service):
             logger.error(f"Error getting audit log: {str(e)}")
             logger.error(traceback.format_exc())
             return jsonify({'error': str(e)}), 500
-        
+
+    @payment_bp.route('/manual-refunds', methods=['GET'])
+    def get_manual_refunds():
+        """Get pending manual refunds for admin processing"""
+        try:
+            status_filter = request.args.get('status', 'scheduled')
+            
+            conn = payment_service.db.get_connection()
+            cursor = conn.cursor(dictionary=True)
+            
+            cursor.execute("""
+                SELECT mr.*, us.plan_id, sp.name as plan_name
+                FROM manual_refunds mr
+                LEFT JOIN user_subscriptions us ON mr.subscription_id = us.id
+                LEFT JOIN subscription_plans sp ON us.plan_id = sp.id
+                WHERE mr.status = %s
+                ORDER BY mr.scheduled_at DESC
+            """, (status_filter,))
+            
+            refunds = cursor.fetchall()
+            cursor.close()
+            conn.close()
+            
+            return jsonify({'refunds': refunds})
+            
+        except Exception as e:
+            logger.error(f"Error getting manual refunds: {str(e)}")
+            return jsonify({'error': str(e)}), 500
+
+    @payment_bp.route('/manual-refunds/<refund_id>/process', methods=['POST'])
+    def process_manual_refund(refund_id):
+        """Mark manual refund as processed"""
+        try:
+            data = request.json
+            processed_by = data.get('processed_by', 'admin')
+            admin_notes = data.get('admin_notes', '')
+            new_status = data.get('status', 'completed')
+            
+            conn = payment_service.db.get_connection()
+            cursor = conn.cursor()
+            
+            cursor.execute("""
+                UPDATE manual_refunds 
+                SET status = %s, processed_by = %s, admin_notes = %s, 
+                    processed_at = NOW(), updated_at = NOW()
+                WHERE id = %s
+            """, (new_status, processed_by, admin_notes, refund_id))
+            
+            conn.commit()
+            cursor.close()
+            conn.close()
+            
+            return jsonify({'success': True, 'message': 'Refund status updated'})
+            
+        except Exception as e:
+            logger.error(f"Error processing manual refund: {str(e)}")
+            return jsonify({'error': str(e)}), 500
+
     # Register the blueprint with the app
     app.register_blueprint(payment_bp)
     
