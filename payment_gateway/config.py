@@ -44,7 +44,9 @@ RAZORPAY_WEBHOOK_SECRET = os.getenv('RAZORPAY_WEBHOOK_SECRET', '')
 # PayPal credentials would be added here
 PAYPAL_CLIENT_ID = os.getenv('PAYPAL_CLIENT_ID', '')
 PAYPAL_CLIENT_SECRET = os.getenv('PAYPAL_CLIENT_SECRET', '')
-PAYPAL_WEBHOOK_SECRET = os.getenv('PAYPAL_WEBHOOK_SECRET','')
+
+#not required
+#PAYPAL_WEBHOOK_SECRET = os.getenv('PAYPAL_WEBHOOK_SECRET','')
 
 # PayPal Environment based on FLASK_ENV
 PAYPAL_BASE_URL = (
@@ -90,6 +92,8 @@ def get_api_base_url():
     )
 WEBHOOK_BASE_URL = get_api_base_url()
 
+# ADD these new environment variables
+PAYPAL_WEBHOOK_ID = os.getenv('PAYPAL_WEBHOOK_ID', '')
 # PayPal return URLs
 PAYPAL_RETURN_URL = f"{WEBHOOK_BASE_URL}/api/subscriptions/paypal-success"
 PAYPAL_CANCEL_URL = f"{WEBHOOK_BASE_URL}/api/subscriptions/paypal-cancel"

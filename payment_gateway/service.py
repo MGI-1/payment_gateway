@@ -117,6 +117,59 @@ class PaymentService:
         except Exception as e:
             logger.error(f"Error getting existing subscription: {str(e)}")
             raise
+    def _calculate_value_remaining_percentage(self, billing_cycle_info, resource_info):
+        """Calculate value remaining as percentage based on min of time left and resources left"""
+        time_remaining_pct = billing_cycle_info['time_factor']
+        resource_remaining_pct = 1 - resource_info['base_plan_consumed_pct']
+        value_remaining_pct = min(time_remaining_pct, resource_remaining_pct)
+        return max(0.0, value_remaining_pct)
+
+    def _get_discount_offer_for_value(self, value_remaining_as_pct_of_new_plan):
+        """Get appropriate Razorpay discount offer based on value remaining"""
+        if value_remaining_as_pct_of_new_plan > 67:
+            return {
+                'error': True,
+                'error_type': 'discount_too_high',
+                'message': 'The remaining value is too high for automatic upgrade. Please contact support for assistance.',
+                'action_required': 'contact_support'
+            }
+        
+        available_discounts = [1, 4, 7, 10, 15, 20, 25, 30, 35, 40, 45, 50, 55, 60, 67]
+        
+        for discount in available_discounts:
+            if value_remaining_as_pct_of_new_plan <= discount:
+                return discount
+        
+        raise ValueError("Unexpected discount calculation error")
+
+    def _get_currency_and_gateway_from_plan(self, plan):
+        """Determine currency and preferred gateway from plan"""
+        currency = plan.get('currency')
+        
+        if currency not in ['INR', 'USD']:
+            raise ValueError({
+                'error': True,
+                'error_type': 'unsupported_currency',
+                'message': 'Unsupported currency. Please contact support.',
+                'action_required': 'contact_support'
+            })
+        
+        payment_gateways = plan.get('payment_gateways', ['razorpay'])
+        
+        if currency == 'INR':
+            return 'INR', 'razorpay'
+        else:  # USD
+            preferred_gateway = payment_gateways[0] if payment_gateways else 'razorpay'
+            return 'USD', preferred_gateway
+
+    def _is_monthly_plan(self, plan):
+        """Check if plan is monthly"""
+        return plan.get('interval') == 'month' and plan.get('interval_count', 1) == 1
+
+    def _is_annual_plan(self, plan):
+        """Check if plan is annual"""
+        return (plan.get('interval') == 'year' and plan.get('interval_count', 1) == 1) or \
+            (plan.get('interval') == 'month' and plan.get('interval_count', 1) >= 12)
 
     def _handle_free_subscription(self, user_id, plan_id, app_id, plan, existing_subscription):
         """Handle free subscription creation with focused transaction"""
@@ -344,39 +397,6 @@ class PaymentService:
             logger.error(f"Error saving paid subscription: {str(e)}")
             raise
     
-    def create_paypal_subscription(self, user_id, plan_id, paypal_subscription_id, app_id='marketfit'):
-        """
-        Create a subscription record for a PayPal subscription
-        
-        Args:
-            user_id: The user's ID
-            plan_id: The plan ID
-            paypal_subscription_id: The PayPal subscription ID
-            app_id: The application ID
-            
-        Returns:
-            dict: Subscription details
-        """
-        logger.info(f"Creating PayPal subscription for user {user_id}, plan {plan_id}")
-        
-        try:
-            plan = self._get_plan_for_app(plan_id, app_id)
-            if not plan:
-                return {'error': 'Plan not found'}
-            
-            existing = self._get_existing_subscription(user_id, app_id)
-            
-            subscription_id = self._save_paypal_subscription_transaction(
-                user_id, plan_id, paypal_subscription_id, app_id, plan, existing
-            )
-            
-            return self._get_subscription_details(subscription_id)
-            
-        except Exception as e:
-            logger.error(f"Error creating PayPal subscription: {str(e)}")
-            logger.error(traceback.format_exc())
-            return {'error': str(e)}
-
     def _get_plan_for_app(self, plan_id, app_id):
         """Get plan details for specific app with isolated connection"""
         try:
@@ -2547,131 +2567,72 @@ class PaymentService:
             }
 
     def upgrade_subscription(self, user_id, subscription_id, new_plan_id, app_id):
-        """
-        Upgrade subscription with blocking logic for high resource consumption
-        """
+        """Upgrade subscription with different logic based on currency and payment method"""
         logger.info(f"[UPGRADE] Service started: user={user_id}, sub={subscription_id}, plan={new_plan_id}")
         
         try:
             # Phase 1: Get current state
-            logger.info("[UPGRADE] Phase 1: Getting subscription details")
             subscription = self._get_subscription_details(subscription_id)
-            if not subscription:
-                raise ValueError("Subscription not found")
+            if not subscription or subscription['user_id'] != user_id:
+                raise ValueError("Subscription not found or access denied")
 
-            logger.info("[UPGRADE] Phase 1: Checking user ownership")
-            if subscription['user_id'] != user_id:
-                raise ValueError("Subscription does not belong to user")
-
-            logger.info("[UPGRADE] Phase 1: Getting current plan")
             current_plan = self._get_plan(subscription['plan_id'])
-            logger.info("[UPGRADE] Phase 1: Getting new plan")
             new_plan = self._get_plan(new_plan_id)
 
             if not current_plan or not new_plan:
                 raise ValueError("Plan not found")
 
-            logger.info("[UPGRADE] Phase 2: Getting usage data")
-            # Phase 2: Calculate proration and check blocking conditions
+            # Check if it's actually an upgrade
+            if new_plan['amount'] <= current_plan['amount']:
+                return {
+                    'error': True,
+                    'error_type': 'downgrade_requested',
+                    'message': 'Downgrades involve complex billing adjustments and require manual processing to ensure accuracy. Please contact our support team who will be happy to assist you with your downgrade request.',
+                    'action_required': 'contact_support'
+                }
+
+            # Phase 2: Get usage and billing data
             usage_data = self.get_current_usage(user_id, subscription_id, app_id)
-            
             if not usage_data:
                 raise ValueError("Usage data not found")
 
-            logger.info("[UPGRADE] Phase 2: Calculating billing cycle")
             billing_cycle_info = calculate_billing_cycle_info(
                 usage_data['billing_period_start'],
                 usage_data['billing_period_end']
             )
 
-            logger.info("[UPGRADE] Phase 2: Calculating resource utilization")
             resource_info = calculate_resource_utilization(
                 usage_data,
                 current_plan['features'],
                 app_id
             )
 
-            logger.info("[UPGRADE] Phase 2: Calculating proration")
-            proration_result = calculate_advanced_proration(
-                current_plan,
-                new_plan,
-                billing_cycle_info,
-                resource_info
-            )
-
-            # Check if it's a downgrade
-            if proration_result.get('is_downgrade'):
-                return proration_result
-
-            logger.info("[UPGRADE] Phase 2: Checking upgrade blocking conditions")
-            # NEW: Check if upgrade should be blocked
-            block_check = self._should_block_upgrade(current_plan, billing_cycle_info, resource_info)
+            # Phase 3: Route to appropriate upgrade handler based on currency and gateway
+            currency, gateway = self._get_currency_and_gateway_from_plan(new_plan)
             
-            if block_check['should_block']:
-                # Log the blocked upgrade attempt
-                self.db.log_subscription_action(
-                    subscription_id,
-                    'upgrade_blocked',
-                    {
-                        'old_plan_id': current_plan['id'],
-                        'requested_plan_id': new_plan_id,
-                        'block_reason': block_check['reason'],
-                        'block_details': block_check,
-                        'proration_details': proration_result
-                    },
-                    f'user_{user_id}'
-                )
-                
-                return {
-                    'error': True,
-                    'error_type': 'upgrade_blocked_high_consumption',
-                    'message': 'Your upgrade request requires manual review due to high resource usage. Please contact our support team who will assist you with the upgrade process.',
-                    'contact_info': 'support@yourcompany.com',
-                    'details': {
-                        'time_consumed': f"{block_check['time_consumed_pct']:.1%}",
-                        'resources_consumed': f"{block_check['resource_consumed_pct']:.1%}",
-                        'billing_period_months': block_check['billing_period_months']
-                    },
-                    'action_required': 'contact_support'
-                }
+            logger.info(f"[UPGRADE] Currency: {currency}, Gateway: {gateway}")
 
-            logger.info("[UPGRADE] Phase 3: Starting gateway upgrade")
-            # Phase 3: Handle gateway-specific upgrade (WITHOUT proration)
-            if subscription.get('razorpay_subscription_id'):
-                logger.info("[UPGRADE] Using Razorpay upgrade")
-                result = self._upgrade_razorpay_subscription(
-                    subscription, new_plan_id, proration_result
+            if currency == 'INR':
+                return self._handle_inr_upgrade(
+                    subscription, current_plan, new_plan, app_id, 
+                    billing_cycle_info, resource_info
                 )
-            elif subscription.get('paypal_subscription_id'):
-                logger.info("[UPGRADE] Using PayPal upgrade")
-                result = self._upgrade_paypal_subscription(
-                    subscription, new_plan_id, proration_result
-                )
-            else:
-                raise ValueError("No gateway subscription ID found")
-
-            logger.info("[UPGRADE] Phase 4: Logging upgrade action")
-            # Phase 4: Log the upgrade with proration details (but not applied)
-            self.db.log_subscription_action(
-                subscription_id,
-                'plan_upgrade',
-                {
-                    'old_plan_id': current_plan['id'],
-                    'new_plan_id': new_plan_id,
-                    'calculated_proration_amount': proration_result.get('prorated_amount', 0),
-                    'proration_details': proration_result,
-                    'block_check_details': block_check,
-                    'proration_applied': False,
-                    'note': 'Upgrade completed without proration - amount calculated for audit only'
-                },
-                f'user_{user_id}'
-            )
-
-            logger.info("[UPGRADE] Upgrade completed successfully")
-            return result
+            else:  # USD
+                if gateway == 'razorpay':
+                    return self._handle_usd_razorpay_upgrade(
+                        subscription, current_plan, new_plan, app_id,
+                        billing_cycle_info, resource_info
+                    )
+                elif gateway == 'paypal':
+                    return self._handle_usd_paypal_upgrade(
+                        subscription, current_plan, new_plan, app_id,
+                        billing_cycle_info, resource_info
+                    )
+                else:
+                    raise ValueError(f"Unsupported gateway for USD: {gateway}")
 
         except Exception as e:
-            logger.info(f"[UPGRADE] Service exception: {str(e)}")
+            logger.error(f"[UPGRADE] Service exception: {str(e)}")
             raise
 
     def _upgrade_razorpay_subscription(self, subscription, new_plan_id, proration_result):
@@ -2759,6 +2720,618 @@ class PaymentService:
                 }
             
             raise
+
+    def _handle_inr_upgrade(self, subscription, current_plan, new_plan, app_id, billing_cycle_info, resource_info):
+        """Handle INR upgrades - Cancel old and create new with discount"""
+        logger.info("[UPGRADE] Handling INR upgrade - cancel and recreate")
+        
+        try:
+            # Calculate value remaining and messaging
+            value_remaining_pct = self._calculate_value_remaining_percentage(billing_cycle_info, resource_info)
+            value_remaining_amount = value_remaining_pct * current_plan['amount']
+            discount_pct_of_new_plan = (value_remaining_amount / new_plan['amount']) * 100
+            
+            discount_result = self._get_discount_offer_for_value(discount_pct_of_new_plan)
+            if discount_result.get('error'):
+                return discount_result
+            
+            discount_offer_pct = discount_result
+            discount_amount = (discount_offer_pct / 100) * new_plan['amount']
+            
+            # Create detailed message
+            time_remaining = billing_cycle_info['time_factor'] * 100
+            resource_remaining = (1 - resource_info['base_plan_consumed_pct']) * 100
+            
+            message = (
+                f"Upgrading from {current_plan['name']} to {new_plan['name']}. "
+                f"Your current plan has {time_remaining:.0f}% time remaining and {resource_remaining:.0f}% resources remaining. "
+                f"We're applying a {discount_offer_pct}% discount (₹{discount_amount:.0f} off) to your new plan to account for the remaining value. "
+                f"This ensures you only pay for what you use!"
+            )
+            
+            # Phase 1: Cancel current subscription
+            logger.info("[UPGRADE] Cancelling current subscription")
+            cancel_result = self._cancel_razorpay_subscription_immediately(subscription)
+            
+            # Phase 2: Create new subscription with discount
+            logger.info("[UPGRADE] Creating new subscription with discount")
+            new_subscription_result = self._create_subscription_with_discount(
+                subscription['user_id'], 
+                new_plan['id'], 
+                app_id, 
+                discount_offer_pct
+            )
+            
+            # Phase 3: Log the upgrade
+            self.db.log_subscription_action(
+                subscription['id'],
+                'inr_upgrade_cancel_recreate',
+                {
+                    'old_plan_id': current_plan['id'],
+                    'new_plan_id': new_plan['id'],
+                    'value_remaining_pct': value_remaining_pct,
+                    'discount_applied_pct': discount_offer_pct,
+                    'cancel_result': cancel_result,
+                    'new_subscription': new_subscription_result
+                },
+                f"user_{subscription['user_id']}"
+            )
+            
+            return {
+                'success': True,
+                'upgrade_type': 'cancel_and_recreate',
+                'old_subscription_id': subscription['id'],
+                'new_subscription': new_subscription_result,
+                'discount_applied': discount_offer_pct,
+                'discount_amount': discount_amount,
+                'value_remaining': f"{value_remaining_pct:.1%}",
+                'message': message,
+                'razorpay_link': new_subscription_result.get('short_url'),
+                'calculation_details': {
+                    'old_plan_remaining_value': value_remaining_amount,
+                    'new_plan_price': new_plan['amount'],
+                    'discount_percentage': discount_offer_pct,
+                    'you_save': discount_amount
+                }
+            }
+            
+        except Exception as e:
+            logger.error(f"Error in INR upgrade: {str(e)}")
+            raise
+
+    def _handle_usd_razorpay_upgrade(self, subscription, current_plan, new_plan, app_id, billing_cycle_info, resource_info):
+        """Handle USD Razorpay upgrades"""
+        logger.info("[UPGRADE] Handling USD Razorpay upgrade")
+        
+        try:
+            current_is_monthly = self._is_monthly_plan(current_plan)
+            new_is_annual = self._is_annual_plan(new_plan)
+            
+            if current_is_monthly:
+                # a1) Monthly to any higher plan - Use Razorpay's automatic handling
+                return self._handle_usd_razorpay_simple_upgrade(subscription, new_plan['id'])
+                
+            else:  # current is annual
+                if not new_is_annual:
+                    raise ValueError("Downgrades involve complex billing adjustments and require manual processing to ensure accuracy. Please contact our support team who will be happy to assist you.")
+                    
+                # a2) Annual to Annual - Complex upgrade with potential additional payment
+                return self._handle_usd_razorpay_annual_upgrade(
+                    subscription, current_plan, new_plan, app_id, 
+                    billing_cycle_info, resource_info
+                )
+                
+        except Exception as e:
+            logger.error(f"Error in USD Razorpay upgrade: {str(e)}")
+            raise
+
+    def _handle_usd_razorpay_simple_upgrade(self, subscription, new_plan_id):
+        """Handle simple USD Razorpay upgrade"""
+        try:
+            razorpay_subscription_id = subscription['razorpay_subscription_id']
+            
+            # Razorpay USD allows plan changes
+            response = self.razorpay.client.subscription.edit(razorpay_subscription_id, {
+                'plan_id': new_plan_id
+            })
+            
+            if 'error' in response:
+                raise ValueError(f"Razorpay upgrade failed: {response.get('error', {}).get('description')}")
+            
+            # Update local database and initialize full quota immediately
+            self._update_subscription_plan(subscription['id'], new_plan_id)
+            self.initialize_resource_quota(subscription['user_id'], subscription['id'], subscription['app_id'])
+            
+            return {
+                'success': True,
+                'upgrade_type': 'razorpay_plan_change',
+                'subscription_id': subscription['id'],
+                'new_plan_id': new_plan_id,
+                'message': 'Subscription upgraded successfully with Razorpay automatic billing.'
+            }
+            
+        except Exception as e:
+            logger.error(f"Error in simple USD Razorpay upgrade: {str(e)}")
+            raise
+
+    def _handle_usd_razorpay_annual_upgrade(self, subscription, current_plan, new_plan, app_id, billing_cycle_info, resource_info):
+        """Handle annual to annual USD Razorpay upgrade with potential additional payment"""
+        try:
+            # First do the standard upgrade
+            simple_result = self._handle_usd_razorpay_simple_upgrade(subscription, new_plan['id'])
+            
+            # Add temporary resources first
+            self._add_temporary_resources(subscription['user_id'], subscription['id'], app_id)
+            
+            # Check if additional payment is needed
+            time_remaining_pct = billing_cycle_info['time_factor']
+            resource_remaining_pct = 1 - resource_info['base_plan_consumed_pct']
+            
+            # Check if resources left% < time left% by 5%
+            if (time_remaining_pct - resource_remaining_pct) >= 0.05:
+                # Calculate additional payment
+                excess_consumption_pct = (time_remaining_pct - resource_remaining_pct) - 0.05
+                additional_amount = excess_consumption_pct * current_plan['amount']
+                
+                # Create additional invoice
+                additional_payment_result = self._create_additional_payment_invoice(
+                    subscription, additional_amount, 'USD'
+                )
+                 # Enhanced message with calculation
+                message = (
+                    f'Subscription upgraded with temporary resources. Additional payment of ${additional_amount:.2f} required. '
+                    f'Calculation: You have {time_remaining_pct:.1%} time remaining but only {resource_remaining_pct:.1%} resources left. '
+                    f'The excess consumption of {excess_consumption_pct:.1%} × ${current_plan["amount"]} = ${additional_amount:.2f}.'
+                )
+                simple_result.update({
+                    'additional_payment_required': True,
+                    'additional_amount': additional_amount,
+                    'additional_payment_link': additional_payment_result.get('short_url'),
+                    'message': message,
+                    'temporary_resources_added': True
+                })
+            else:
+                simple_result.update({
+                    'temporary_resources_added': True,
+                    'message': 'Subscription upgraded successfully. Temporary resources added.'
+                })
+            
+            return simple_result
+            
+        except Exception as e:
+            logger.error(f"Error in annual USD Razorpay upgrade: {str(e)}")
+            raise
+
+    def _handle_usd_paypal_upgrade(self, subscription, current_plan, new_plan, app_id, billing_cycle_info, resource_info):
+        """Handle USD PayPal upgrades"""
+        logger.info("[UPGRADE] Handling USD PayPal upgrade")
+        
+        try:
+            current_is_monthly = self._is_monthly_plan(current_plan)
+            new_is_annual = self._is_annual_plan(new_plan)
+            
+            if current_is_monthly:
+                # b1) Monthly to Monthly/Annual - Immediate update with temp resources
+                return self._handle_usd_paypal_simple_upgrade(subscription, new_plan, app_id)
+                
+            else:  # current is annual
+                if not new_is_annual:
+                    raise ValueError("Cannot downgrade from annual to monthly plan")
+                    
+                # b2) Annual to Annual - Proration payment then update
+                return self._handle_usd_paypal_annual_upgrade(
+                    subscription, current_plan, new_plan, app_id, 
+                    billing_cycle_info, resource_info
+                )
+                
+        except Exception as e:
+            logger.error(f"Error in USD PayPal upgrade: {str(e)}")
+            raise
+
+    def _handle_usd_paypal_simple_upgrade(self, subscription, new_plan, app_id):
+        """Handle simple USD PayPal upgrade"""
+        try:
+            paypal_subscription_id = subscription['paypal_subscription_id']
+            new_paypal_plan_id = new_plan['paypal_plan_id']
+            
+            # Update PayPal subscription immediately
+            result = self.paypal.update_subscription_plan_only(
+                paypal_subscription_id,
+                new_paypal_plan_id
+            )
+            
+            if result.get('error'):
+                raise ValueError(f"PayPal upgrade failed: {result['message']}")
+            
+            # Update local database
+            self._update_subscription_plan(subscription['id'], new_plan['id'])
+            
+            # Add temporary resources (double free plan)
+            self._add_temporary_resources(subscription['user_id'], subscription['id'], app_id)
+            
+            return {
+                'success': True,
+                'upgrade_type': 'paypal_immediate',
+                'subscription_id': subscription['id'],
+                'new_plan_id': new_plan['id'],
+                'message': 'PayPal subscription upgraded successfully. Temporary resources added until next billing cycle.',
+                'temporary_resources_added': True,
+                'requires_approval': result.get('requires_approval', False),
+                'approval_url': result.get('approval_url')
+            }
+            
+        except Exception as e:
+            logger.error(f"Error in simple USD PayPal upgrade: {str(e)}")
+            raise
+
+    def _handle_usd_paypal_annual_upgrade(self, subscription, current_plan, new_plan, app_id, billing_cycle_info, resource_info):
+        """Handle annual to annual USD PayPal upgrade with proration payment"""
+        try:
+            # Calculate proration amount and messaging
+            value_remaining_pct = self._calculate_value_remaining_percentage(billing_cycle_info, resource_info)
+            remaining_period_value = value_remaining_pct * new_plan['amount']
+            
+            time_remaining = billing_cycle_info['time_factor'] * 100
+            resource_remaining = (1 - resource_info['base_plan_consumed_pct']) * 100
+            
+            message = (
+                f"Upgrading from {current_plan['name']} to {new_plan['name']}. "
+                f"You have {time_remaining:.0f}% time remaining and {resource_remaining:.0f}% resources remaining in your current billing cycle. "
+                f"We're charging you ${remaining_period_value:.2f} for the upgraded features for the remaining period. "
+                f"This is calculated based on the minimum of time/resources remaining to ensure fair billing."
+            )
+            
+            # Create one-time PayPal payment for proration
+            proration_payment_result = self._create_paypal_one_time_payment(
+                remaining_period_value,
+                subscription,
+                'Upgrade proration payment'
+            )
+            
+            if proration_payment_result.get('error'):
+                raise ValueError(f"Failed to create proration payment: {proration_payment_result['message']}")
+            
+            # Store pending upgrade details
+            self._store_pending_paypal_upgrade(
+                subscription['id'],
+                new_plan['id'],
+                proration_payment_result['order_id']
+            )
+            
+            return {
+                'success': True,
+                'upgrade_type': 'paypal_with_proration',
+                'subscription_id': subscription['id'],
+                'new_plan_id': new_plan['id'],
+                'proration_amount': remaining_period_value,
+                'payment_required': True,
+                'payment_url': proration_payment_result['approval_url'],
+                'message': message,
+                'order_id': proration_payment_result['order_id'],
+                'calculation_details': {
+                    'time_remaining': f"{time_remaining:.0f}%",
+                    'resources_remaining': f"{resource_remaining:.0f}%",
+                    'billing_basis': 'minimum of time and resources remaining',
+                    'proration_charge': remaining_period_value
+                }
+            }
+            
+        except Exception as e:
+            logger.error(f"Error in annual USD PayPal upgrade: {str(e)}")
+            raise
+
+    # Supporting methods
+    def _cancel_razorpay_subscription_immediately(self, subscription):
+        """Cancel Razorpay subscription immediately"""
+        try:
+            if subscription.get('razorpay_subscription_id'):
+                result = self.razorpay.cancel_subscription(
+                    subscription['razorpay_subscription_id'],
+                    cancel_at_cycle_end=False
+                )
+                
+                if not result.get('error'):
+                    self._update_subscription_status_by_razorpay_id(
+                        subscription['razorpay_subscription_id'], 
+                        'cancelled'
+                    )
+                
+                return result
+            else:
+                return {'success': True, 'message': 'No Razorpay subscription to cancel'}
+        except Exception as e:
+            return {'error': True, 'message': str(e)}
+
+    def _create_subscription_with_discount(self, user_id, plan_id, app_id, discount_pct):
+        """Create new subscription with discount offer"""
+        try:
+            user = self._get_user_info(user_id)
+            if not user:
+                raise ValueError("User not found")
+            
+            plan = self._get_plan(plan_id)
+            if not plan:
+                raise ValueError("Plan not found")
+            
+            customer_info = {
+                'user_id': user['google_uid'], 
+                'email': user.get('email'), 
+                'name': user.get('display_name')
+            }
+            
+            additional_notes = {
+                'discount_offer': discount_pct,
+                'upgrade_discount': True
+            }
+            
+            response = self.razorpay.create_subscription_with_offer(
+                plan['razorpay_plan_id'] or plan['id'],
+                customer_info,
+                app_id,
+                discount_offer_pct=discount_pct,
+                additional_notes=additional_notes
+            )
+            
+            if response.get('error'):
+                raise ValueError(response.get('message', 'Failed to create subscription'))
+            
+            return self._save_paid_subscription(user_id, plan_id, app_id, response)
+            
+        except Exception as e:
+            logger.error(f"Error creating subscription with discount: {str(e)}")
+            raise
+
+    def _update_subscription_status_by_razorpay_id(self, razorpay_subscription_id, status):
+        """Update subscription status by Razorpay ID"""
+        try:
+            conn = self.db.get_connection()
+            cursor = conn.cursor()
+            
+            cursor.execute(f"""
+                UPDATE {DB_TABLE_USER_SUBSCRIPTIONS}
+                SET status = %s, updated_at = NOW()
+                WHERE razorpay_subscription_id = %s
+            """, (status, razorpay_subscription_id))
+            
+            conn.commit()
+            cursor.close()
+            conn.close()
+            
+        except Exception as e:
+            logger.error(f"Error updating subscription status: {str(e)}")
+
+    def _add_temporary_resources(self, user_id, subscription_id, app_id):
+        """Add double free plan resources temporarily"""
+        try:
+            free_plan = self._get_free_plan(app_id)
+            if not free_plan:
+                logger.warning(f"No free plan found for {app_id}")
+                return
+            
+            free_features = parse_json_field(free_plan.get('features', '{}'))
+            
+            if app_id == 'marketfit':
+                temp_doc_pages = free_features.get('document_pages', 50) * 2
+                temp_perplexity = free_features.get('perplexity_requests', 20) * 2
+                temp_requests = 0
+            else:  # saleswit
+                temp_doc_pages = 0
+                temp_perplexity = 0
+                temp_requests = free_features.get('requests', 20) * 2
+            
+            conn = self.db.get_connection()
+            cursor = conn.cursor()
+            
+            cursor.execute(f"""
+                UPDATE {DB_TABLE_RESOURCE_USAGE}
+                SET document_pages_quota = document_pages_quota + %s,
+                    perplexity_requests_quota = perplexity_requests_quota + %s,
+                    requests_quota = requests_quota + %s,
+                    updated_at = NOW()
+                WHERE user_id = %s AND subscription_id = %s AND app_id = %s
+            """, (temp_doc_pages, temp_perplexity, temp_requests, user_id, subscription_id, app_id))
+            
+            conn.commit()
+            cursor.close()
+            conn.close()
+            
+            logger.info(f"Added temporary resources: {temp_doc_pages} docs, {temp_perplexity} perplexity, {temp_requests} requests")
+            
+        except Exception as e:
+            logger.error(f"Error adding temporary resources: {str(e)}")
+
+    def _create_additional_payment_invoice(self, subscription, amount, currency):
+        """Create additional payment invoice for excess consumption"""
+        try:
+            invoice_data = {
+                'amount': int(amount * 100),
+                'currency': currency,
+                'description': 'Additional payment for excess resource consumption',
+                'customer': {
+                    'email': subscription.get('user_email'),
+                    'name': subscription.get('user_name')
+                },
+                'notes': {
+                    'subscription_id': subscription['id'],
+                    'payment_type': 'excess_consumption'
+                }
+            }
+            
+            result = self.razorpay.create_payment_link(invoice_data)
+            return result
+            
+        except Exception as e:
+            logger.error(f"Error creating additional payment invoice: {str(e)}")
+            return {'error': True, 'message': str(e)}
+
+    def _create_paypal_one_time_payment(self, amount, subscription, description):
+        """Create one-time PayPal payment for proration"""
+        try:
+            payment_data = {
+                'amount': amount,
+                'currency': 'USD',
+                'description': description,
+                'customer_info': {
+                    'user_id': subscription['user_id']
+                },
+                'metadata': {
+                    'subscription_id': subscription['id'],
+                    'payment_type': 'upgrade_proration'
+                }
+            }
+            
+            result = self.paypal.create_one_time_payment(payment_data)
+            return result
+            
+        except Exception as e:
+            logger.error(f"Error creating PayPal one-time payment: {str(e)}")
+            return {'error': True, 'message': str(e)}
+
+    def _store_pending_paypal_upgrade(self, subscription_id, new_plan_id, order_id):
+        """Store pending upgrade details"""
+        try:
+            conn = self.db.get_connection()
+            cursor = conn.cursor()
+            
+            cursor.execute(f"""
+                UPDATE {DB_TABLE_USER_SUBSCRIPTIONS}
+                SET metadata = JSON_MERGE_PATCH(IFNULL(metadata, '{{}}'), %s),
+                    updated_at = NOW()
+                WHERE id = %s
+            """, (json.dumps({
+                'pending_upgrade': {
+                    'new_plan_id': new_plan_id,
+                    'order_id': order_id,
+                    'created_at': datetime.now().isoformat()
+                }
+            }), subscription_id))
+            
+            conn.commit()
+            cursor.close()
+            conn.close()
+            
+        except Exception as e:
+            logger.error(f"Error storing pending upgrade: {str(e)}")
+
+    def handle_additional_payment_completion(self, payment_id, subscription_id):
+        """Handle completion of additional payment for USD annual upgrade"""
+        try:
+            payment_status = self.razorpay.client.payment.fetch(payment_id)
+            
+            if payment_status.get('status') != 'captured':
+                return {'error': True, 'message': 'Payment not completed'}
+            
+            subscription = self._get_subscription_details(subscription_id)
+            if not subscription:
+                return {'error': True, 'message': 'Subscription not found'}
+            
+            # Replace temporary resources with full quota for new plan
+            self.initialize_resource_quota(
+                subscription['user_id'], 
+                subscription_id, 
+                subscription['app_id']
+            )
+            
+            self.db.log_subscription_action(
+                subscription_id,
+                'additional_payment_completed',
+                {
+                    'payment_id': payment_id,
+                    'amount': payment_status.get('amount'),
+                    'status': payment_status.get('status')
+                },
+                f"user_{subscription['user_id']}"
+            )
+            
+            return {
+                'success': True,
+                'message': 'Additional payment processed, full resources activated'
+            }
+            
+        except Exception as e:
+            logger.error(f"Error handling additional payment completion: {str(e)}")
+            return {'error': True, 'message': str(e)}
+
+    def handle_paypal_proration_completion(self, order_id):
+        """Handle completion of PayPal proration payment"""
+        try:
+            capture_result = self.paypal.capture_order_payment(order_id)
+            
+            if capture_result.get('error'):
+                return {'error': True, 'message': 'Failed to capture payment'}
+            
+            subscription = self._find_subscription_by_proration_payment(order_id)
+            if not subscription:
+                return {'error': True, 'message': 'Subscription not found'}
+            
+            pending_upgrade = subscription.get('metadata', {}).get('pending_upgrade', {})
+            new_plan_id = pending_upgrade.get('new_plan_id')
+            
+            if not new_plan_id:
+                return {'error': True, 'message': 'No pending upgrade found'}
+            
+            # Update PayPal subscription
+            paypal_result = self.paypal.update_subscription_plan_only(
+                subscription['paypal_subscription_id'],
+                self._get_plan(new_plan_id)['paypal_plan_id']
+            )
+            
+            # Update local database and set full quota
+            self._update_subscription_plan(subscription['id'], new_plan_id)
+            self.initialize_resource_quota(subscription['user_id'], subscription['id'], subscription['app_id'])
+            
+            # Clear pending upgrade
+            self._clear_pending_upgrade(subscription['id'])
+            
+            return {
+                'success': True,
+                'message': 'Proration payment completed, subscription upgraded'
+            }
+            
+        except Exception as e:
+            logger.error(f"Error handling PayPal proration completion: {str(e)}")
+            return {'error': True, 'message': str(e)}
+
+    def _find_subscription_by_proration_payment(self, order_id):
+        """Find subscription with pending upgrade matching payment ID"""
+        try:
+            conn = self.db.get_connection()
+            cursor = conn.cursor(dictionary=True)
+            
+            cursor.execute(f"""
+                SELECT * FROM {DB_TABLE_USER_SUBSCRIPTIONS}
+                WHERE JSON_EXTRACT(metadata, '$.pending_upgrade.order_id') = %s
+            """, (order_id,))
+            
+            subscription = cursor.fetchone()
+            cursor.close()
+            conn.close()
+            
+            return subscription
+            
+        except Exception as e:
+            logger.error(f"Error finding subscription by proration payment: {str(e)}")
+            return None
+
+    def _clear_pending_upgrade(self, subscription_id):
+        """Clear pending upgrade metadata"""
+        try:
+            conn = self.db.get_connection()
+            cursor = conn.cursor()
+            
+            cursor.execute(f"""
+                UPDATE {DB_TABLE_USER_SUBSCRIPTIONS}
+                SET metadata = JSON_REMOVE(IFNULL(metadata, '{{}}'), '$.pending_upgrade'),
+                    updated_at = NOW()
+                WHERE id = %s
+            """, (subscription_id,))
+            
+            conn.commit()
+            cursor.close()
+            conn.close()
+            
+        except Exception as e:
+            logger.error(f"Error clearing pending upgrade: {str(e)}")
 
     def _upgrade_paypal_subscription(self, subscription, new_plan_id, proration_result):
         """Handle PayPal subscription upgrade without proration"""

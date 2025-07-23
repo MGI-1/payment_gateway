@@ -409,6 +409,42 @@ def init_payment_routes(app, payment_service):
             logger.info(f"[UPGRADE] Route exception: {str(e)}")
             return jsonify({'error': str(e)}), 500
 
+    @payment_bp.route('/payment-callback', methods=['GET', 'POST'])
+    def payment_callback():
+        """Unified payment completion callback handler"""
+        try:
+            if request.method == 'GET':
+                # PayPal return URLs
+                payment_type = request.args.get('type')
+                token = request.args.get('token')
+                
+                if payment_type == 'proration' and token:
+                    result = payment_service.handle_paypal_proration_completion(token)
+                    if result.get('success'):
+                        # Redirect to dashboard with success message
+                        return redirect('/subscription-dashboard?upgrade=success&message=Your subscription has been upgraded successfully! Proration payment completed.')
+                    else:
+                        # Redirect to dashboard with error message  
+                        return redirect('/subscription-dashboard?upgrade=error&message=There was an issue processing your upgrade payment. Please contact support.')
+                
+                return redirect('/subscription-dashboard')
+            
+            elif request.method == 'POST':
+                # Handle webhook events as before
+                data = request.json
+                event_type = data.get('event') or data.get('event_type')
+                
+                if event_type in ['payment.captured', 'payment_link.paid']:
+                    return handle_razorpay_webhook(payment_service)
+                elif event_type == 'PAYMENT.CAPTURE.COMPLETED':
+                    return handle_paypal_webhook(payment_service)
+                else:
+                    return jsonify({'status': 'unhandled_event', 'event': event_type})
+            
+        except Exception as e:
+            logger.error(f"Error in payment callback: {str(e)}")
+            return redirect('/subscription-dashboard?upgrade=error&message=Payment processing failed. Please contact support.')
+
     @payment_bp.route('/downgrade-request', methods=['POST'])
     def request_downgrade():
         """Handle downgrade request - log for manual processing"""
