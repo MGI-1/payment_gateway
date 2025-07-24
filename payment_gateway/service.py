@@ -4,6 +4,7 @@ Main payment service class for payment gateway operations
 import json
 import logging
 import traceback
+import os
 from datetime import datetime, timedelta
 
 from .db import DatabaseManager
@@ -124,8 +125,36 @@ class PaymentService:
         value_remaining_pct = min(time_remaining_pct, resource_remaining_pct)
         return max(0.0, value_remaining_pct)
 
+    def _get_test_discount_for_value(self, value_remaining_pct):
+        """Testing version of discount calculation - embedded in service"""
+        logger.info(f"[TEST DISCOUNT] Calculating discount for {value_remaining_pct:.1f}% remaining value")
+        
+        if value_remaining_pct > 67:
+            return {
+                'error': True,
+                'error_type': 'discount_too_high',
+                'message': 'The remaining value is too high for automatic upgrade. Please contact support for assistance.',
+                'action_required': 'contact_support'
+            }
+        elif value_remaining_pct > 50:
+            logger.info("[TEST DISCOUNT] Applying 65% discount for high remaining value")
+            return 65
+        elif value_remaining_pct > 25:
+            logger.info("[TEST DISCOUNT] Applying 45% discount for medium remaining value")
+            return 45
+        else:
+            logger.info("[TEST DISCOUNT] Applying 20% discount for low remaining value")
+            return 20
+    
     def _get_discount_offer_for_value(self, value_remaining_as_pct_of_new_plan):
-        """Get appropriate Razorpay discount offer based on value remaining"""
+        """Get appropriate Razorpay discount offer based on value remaining - WITH TESTING OVERRIDE"""
+        
+        # ✨ NEW: Check for testing mode first
+        if os.getenv('TESTING_DISCOUNT_MODE') == 'true':
+            logger.info("[TESTING MODE] Using embedded test discount calculation")
+            return self._get_test_discount_for_value(value_remaining_as_pct_of_new_plan)
+        
+        # ✅ UNCHANGED: Original production logic
         if value_remaining_as_pct_of_new_plan > 67:
             return {
                 'error': True,
