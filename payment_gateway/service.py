@@ -919,63 +919,301 @@ class PaymentService:
            logger.error(f"Error activating subscription with period: {str(e)}")
            raise
    
-    def _handle_razorpay_subscription_charged(self, payload):
-       """Handle subscription.charged webhook event - renews subscription and resets resources"""
-       try:
-           subscription_data = self._extract_charged_subscription_data(payload)
-           invoice_data = payload.get('payload', {}).get('invoice', {})
-           payment_data = payload.get('payload', {}).get('payment', {}).get('entity', {})
-           
-           # Get IDs
-           razorpay_subscription_id = subscription_data.get('id')
-           razorpay_invoice_id = payment_data.get('invoice_id') if payment_data else None
-           razorpay_payment_id = payment_data.get('id') if payment_data else None
-          
-         
-           if not razorpay_subscription_id:
-               logger.error("Missing subscription ID in charged webhook")
-           
-           subscription = self._get_subscription_by_razorpay_id(razorpay_subscription_id)
-           
-           if not subscription:
-               logger.error(f"Subscription not found for Razorpay ID: {razorpay_subscription_id}")
-               return {'status': 'error', 'message': 'Subscription not found'}
-           
-           # Get plan details
-           plan = self._get_plan(subscription['plan_id'])
-           
-           # Create new period dates
-           new_start = datetime.now()
-           new_end = calculate_period_end(
-               new_start,
-               plan['interval'] if plan else 'month',
-               plan['interval_count'] if plan else 1
-           )
-           
-           # Update subscription and record invoice in transaction
-           self._renew_subscription_with_invoice(
-               razorpay_subscription_id, 
-               new_start, 
-               new_end, 
-               subscription_data,
-               subscription,
-               razorpay_invoice_id,
-               razorpay_payment_id,
-               payment_data
-           )
-           
-           
-           return {
-               'status': 'success',
-               'message': 'Subscription renewed and usage reset',
-               'new_period_start': new_start.isoformat(),
-               'new_period_end': new_end.isoformat()
-           }
-           
-       except Exception as e:
-           logger.error(f"Error handling subscription charged: {str(e)}")
-           logger.error(traceback.format_exc())
-           return {'status': 'error', 'message': str(e)}
+    def _handle_razorpay_subscription_charged(self, subscription_data, payment_data):
+        """Handle subscription charged event with plan change and payment method detection"""
+        try:
+            razorpay_sub_id = subscription_data.get('id')
+            webhook_plan_id = subscription_data.get('plan_id')  # Plan ID from webhook
+            
+            # Get current subscription from database
+            conn = self.db.get_connection()
+            cursor = conn.cursor(dictionary=True)
+            
+            cursor.execute(f"""
+                SELECT id, user_id, plan_id, app_id, razorpay_subscription_id
+                FROM {DB_TABLE_USER_SUBSCRIPTIONS}
+                WHERE razorpay_subscription_id = %s AND status = 'active'
+            """, (razorpay_sub_id,))
+            
+            subscription = cursor.fetchone()
+            if not subscription:
+                logger.warning(f"Active subscription not found for Razorpay ID: {razorpay_sub_id}")
+                cursor.close()
+                conn.close()
+                return {'success': False, 'error': 'Subscription not found'}
+            
+            database_plan_id = subscription['plan_id']
+            
+            # DETECT PLAN CHANGE (Manual Downgrade/Upgrade)
+            if webhook_plan_id and webhook_plan_id != database_plan_id:
+                logger.info(f"Plan change detected: {database_plan_id} → {webhook_plan_id}")
+                
+                # Get new plan details
+                new_plan = self._get_plan_by_razorpay_id(webhook_plan_id, subscription['app_id'])
+                if new_plan:
+                    # Update subscription plan in database
+                    cursor.execute(f"""
+                        UPDATE {DB_TABLE_USER_SUBSCRIPTIONS}
+                        SET plan_id = %s, plan_name = %s, amount = %s, currency = %s
+                        WHERE id = %s
+                    """, (new_plan['id'], new_plan['name'], new_plan['amount'], 
+                        new_plan['currency'], subscription['id']))
+                    
+                    # Reset resource quota to new plan
+                    self._reset_quota_for_plan_change(
+                        subscription['user_id'], 
+                        subscription['id'],
+                        new_plan,
+                        subscription['app_id']
+                    )
+                    
+                    # Log plan change event
+                    self._log_subscription_event(
+                        subscription['user_id'],
+                        subscription['id'], 
+                        'plan_changed_manually',
+                        {
+                            'old_plan_id': database_plan_id,
+                            'new_plan_id': new_plan['id'],
+                            'changed_via': 'razorpay_admin'
+                        }
+                    )
+                    
+                    logger.info(f"Plan change synced: User {subscription['user_id']} moved to {new_plan['name']}")
+            
+            # DETECT PAYMENT METHOD CHANGE
+            current_payment_method = payment_data.get('method')  # From current payment
+            
+            if current_payment_method:
+                # Get last stored payment method
+                cursor.execute("""
+                    SELECT payment_method FROM subscription_invoices 
+                    WHERE subscription_id = %s 
+                    ORDER BY created_at DESC LIMIT 1
+                """, (subscription['id'],))
+                
+                last_method_record = cursor.fetchone()
+                last_payment_method = last_method_record['payment_method'] if last_method_record else None
+                
+                # Check if payment method changed
+                if last_payment_method and current_payment_method != last_payment_method:
+                    logger.info(f"Payment method changed: {last_payment_method} → {current_payment_method}")
+                    
+                    # Log payment method change
+                    self._log_subscription_event(
+                        subscription['user_id'],
+                        subscription['id'],
+                        'payment_method_changed',
+                        {
+                            'old_method': last_payment_method,
+                            'new_method': current_payment_method,
+                            'change_detected_in': 'subscription_charged_webhook'
+                        }
+                    )
+            
+            # Create invoice record for this payment
+            invoice_id = generate_id('inv_')
+            payment_id = payment_data.get('id')
+            amount = payment_data.get('amount', 0) / 100  # Convert paisa to rupees
+            currency = payment_data.get('currency', 'INR')
+            
+            cursor.execute("""
+                INSERT INTO subscription_invoices 
+                (id, subscription_id, user_id, razorpay_payment_id, amount, currency, 
+                status, payment_method, invoice_date, app_id)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, NOW(), %s)
+            """, (
+                invoice_id,
+                subscription['id'],
+                subscription['user_id'],
+                payment_id,
+                amount,
+                currency,
+                'paid',
+                current_payment_method or 'unknown',
+                subscription['app_id']
+            ))
+            
+            # Reset resource quota for the new billing period
+            self.initialize_resource_quota(
+                subscription['user_id'], 
+                subscription['id'], 
+                subscription['app_id']
+            )
+            
+            # Update subscription billing dates
+            cursor.execute(f"""
+                UPDATE {DB_TABLE_USER_SUBSCRIPTIONS}
+                SET current_period_start = NOW(),
+                    current_period_end = DATE_ADD(NOW(), INTERVAL 1 WEEK),
+                    status = 'active'
+                WHERE id = %s
+            """, (subscription['id'],))
+            
+            conn.commit()
+            cursor.close()
+            conn.close()
+            
+            logger.info(f"Subscription charged processed: {subscription['user_id']} - ₹{amount}")
+            
+            return {
+                'success': True,
+                'subscription_id': subscription['id'],
+                'invoice_id': invoice_id,
+                'amount': amount,
+                'payment_method': current_payment_method
+            }
+            
+        except Exception as e:
+            logger.error(f"Error handling subscription charged with plan sync: {str(e)}")
+            if 'cursor' in locals():
+                cursor.close()
+            if 'conn' in locals():
+                conn.close()
+            raise
+
+    def _get_plan_by_razorpay_id(self, razorpay_plan_id, app_id):
+        """Get plan details by Razorpay plan ID"""
+        try:
+            conn = self.db.get_connection()
+            cursor = conn.cursor(dictionary=True)
+            
+            cursor.execute("""
+                SELECT * FROM subscription_plans 
+                WHERE razorpay_plan_id = %s AND app_id = %s AND is_active = 1
+            """, (razorpay_plan_id, app_id))
+            
+            plan = cursor.fetchone()
+            cursor.close()
+            conn.close()
+            
+            if plan:
+                logger.info(f"Found plan by Razorpay ID {razorpay_plan_id}: {plan['name']}")
+            else:
+                logger.warning(f"No plan found for Razorpay ID: {razorpay_plan_id}")
+            
+            return plan
+            
+        except Exception as e:
+            logger.error(f"Error getting plan by Razorpay ID {razorpay_plan_id}: {str(e)}")
+            if 'cursor' in locals():
+                cursor.close()
+            if 'conn' in locals():
+                conn.close()
+            return None
+
+    def _reset_quota_for_plan_change(self, user_id, subscription_id, new_plan, app_id):
+        """Reset resource quota when plan changes manually"""
+        try:
+            # Get new plan features
+            new_features = json.loads(new_plan.get('features', '{}'))
+            
+            # Update resource quota to new plan limits
+            conn = self.db.get_connection()
+            cursor = conn.cursor()
+            
+            # First, delete existing quota records for this user and app
+            cursor.execute(f"""
+                DELETE FROM {DB_TABLE_RESOURCE_USAGE}
+                WHERE user_id = %s AND app_id = %s
+            """, (user_id, app_id))
+            
+            # Create new quota records based on new plan
+            for resource_type, limit in new_features.items():
+                quota_id = generate_id('quota_')
+                cursor.execute(f"""
+                    INSERT INTO {DB_TABLE_RESOURCE_USAGE}
+                    (id, user_id, subscription_id, app_id, resource_type, quota_limit, 
+                    current_usage, billing_period_start, billing_period_end)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, NOW(), DATE_ADD(NOW(), INTERVAL 1 WEEK))
+                """, (
+                    quota_id,
+                    user_id,
+                    subscription_id,
+                    app_id,
+                    resource_type,
+                    limit,
+                    0  # Reset usage to 0
+                ))
+            
+            conn.commit()
+            cursor.close()
+            conn.close()
+            
+            logger.info(f"Resource quota reset for plan change: {user_id} → {new_plan['name']}")
+            logger.info(f"New quota limits: {new_features}")
+            
+        except Exception as e:
+            logger.error(f"Error resetting quota for plan change: {str(e)}")
+            if 'cursor' in locals():
+                cursor.close()
+            if 'conn' in locals():
+                conn.close()
+            raise
+
+    def _get_latest_payment_method(self, subscription_id):
+        """Get the most recent payment method for a subscription"""
+        try:
+            conn = self.db.get_connection()
+            cursor = conn.cursor(dictionary=True)
+            
+            cursor.execute("""
+                SELECT payment_method, created_at FROM subscription_invoices 
+                WHERE subscription_id = %s 
+                ORDER BY created_at DESC LIMIT 1
+            """, (subscription_id,))
+            
+            result = cursor.fetchone()
+            cursor.close()
+            conn.close()
+            
+            if result:
+                logger.info(f"Latest payment method for subscription {subscription_id}: {result['payment_method']}")
+                return result['payment_method']
+            else:
+                logger.warning(f"No payment method found for subscription {subscription_id}")
+                return 'unknown'
+            
+        except Exception as e:
+            logger.error(f"Error getting latest payment method for subscription {subscription_id}: {str(e)}")
+            if 'cursor' in locals():
+                cursor.close()
+            if 'conn' in locals():
+                conn.close()
+            return 'unknown'
+
+    def _log_subscription_event(self, user_id, subscription_id, event_type, event_data=None):
+        """Log subscription events for audit trail"""
+        try:
+            conn = self.db.get_connection()
+            cursor = conn.cursor()
+            
+            event_id = generate_id('event_')
+            
+            cursor.execute("""
+                INSERT INTO subscription_events_log 
+                (id, user_id, subscription_id, event_type, event_data, created_at)
+                VALUES (%s, %s, %s, %s, %s, NOW())
+            """, (
+                event_id,
+                user_id,
+                subscription_id,
+                event_type,
+                json.dumps(event_data) if event_data else None
+            ))
+            
+            conn.commit()
+            cursor.close()
+            conn.close()
+            
+            logger.info(f"Subscription event logged: {event_type} for user {user_id}")
+            
+        except Exception as e:
+            logger.error(f"Error logging subscription event: {str(e)}")
+            if 'cursor' in locals():
+                cursor.close()
+            if 'conn' in locals():
+                conn.close()
 
     def _extract_charged_subscription_data(self, payload):
        """Extract subscription data from charged webhook payload"""
@@ -1646,29 +1884,84 @@ class PaymentService:
        return quota
 
     def check_resource_availability(self, user_id, app_id, resource_type, count=1):
-       """Check if user has enough resources available."""
-       
-       try:
-           # Ensure user has a resource quota entry
-           ensure_result = self.ensure_user_has_resource_quota(user_id, app_id)
-           
-           # Get the user's resource quota
-           quota = self.get_resource_quota(user_id, app_id)
-           
-           # Check if the quota is enough for the requested count
-           if resource_type in quota:
-               is_available = quota[resource_type] >= count
-               return is_available
-           
-           # If resource type not found in quota, assume unavailable
-           logger.warning(f"[AZURE DEBUG] Resource type {resource_type} not found in quota for user {user_id}")
-           return False
-               
-       except Exception as e:
-           logger.error(f"[AZURE DEBUG] Error in check_resource_availability: {str(e)}")
-           logger.error(traceback.format_exc())
-           # Default to not available on error
-           return False
+        """Check resource availability with subscription status validation"""
+        try:
+            # Check if subscription is active first
+            subscription = self.get_user_subscription(user_id, app_id)
+            
+            if subscription:
+                subscription_status = subscription.get('status')
+                
+                # Block access if subscription is suspended
+                if subscription_status == 'halted':
+                    return {
+                        'available': False,
+                        'error': 'subscription_suspended',
+                        'message': 'Your subscription is suspended due to payment failure. Please update your payment method.',
+                        'current_quota': 0,
+                        'requested': count
+                    }
+                
+                # Block access if subscription is cancelled
+                if subscription_status == 'cancelled':
+                    return {
+                        'available': False,
+                        'error': 'subscription_cancelled', 
+                        'message': 'Your subscription has been cancelled. Please subscribe to continue using premium features.',
+                        'current_quota': 0,
+                        'requested': count
+                    }
+            
+            # Get current resource usage
+            conn = self.db.get_connection()
+            cursor = conn.cursor(dictionary=True)
+            
+            cursor.execute(f"""
+                SELECT quota_limit, current_usage 
+                FROM {DB_TABLE_RESOURCE_USAGE}
+                WHERE user_id = %s AND app_id = %s AND resource_type = %s
+            """, (user_id, app_id, resource_type))
+            
+            quota_record = cursor.fetchone()
+            cursor.close()
+            conn.close()
+            
+            if not quota_record:
+                # No quota record found - this might be a free user or initialization issue
+                logger.warning(f"No quota record found for user {user_id}, resource {resource_type}")
+                return {
+                    'available': False,
+                    'error': 'quota_not_initialized',
+                    'message': 'Resource quota not found. Please contact support.',
+                    'current_quota': 0,
+                    'requested': count
+                }
+            
+            quota_limit = quota_record['quota_limit']
+            current_usage = quota_record['current_usage']
+            remaining = quota_limit - current_usage
+            
+            # Check if requested amount is available
+            is_available = remaining >= count
+            
+            return {
+                'available': is_available,
+                'current_quota': remaining,
+                'quota_limit': quota_limit,
+                'current_usage': current_usage,
+                'requested': count,
+                'message': f"{remaining} {resource_type} remaining" if is_available else f"Insufficient {resource_type}. {remaining} remaining, {count} requested."
+            }
+            
+        except Exception as e:
+            logger.error(f"Error checking resource availability: {str(e)}")
+            return {
+                'available': False,
+                'error': 'system_error',
+                'message': 'Unable to check resource availability. Please try again.',
+                'current_quota': 0,
+                'requested': count
+            }
 
     def decrement_resource_quota(self, user_id, app_id, resource_type, count=1):
        """Decrement resource quota for a user."""
