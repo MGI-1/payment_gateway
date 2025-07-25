@@ -45,7 +45,14 @@ class PaymentService:
         # Initialize database tables
         with app.app_context():
             self.db.init_tables()
-    
+
+    def _ensure_float(self, value):
+        """Convert Decimal/any numeric type to float for calculations"""
+        from decimal import Decimal
+        if isinstance(value, Decimal):
+            return float(value)
+        return float(value) if value is not None else 0.0
+
     def create_subscription(self, user_id, plan_id, app_id):
         """
         Create a subscription for a user.
@@ -2735,15 +2742,15 @@ class PaymentService:
         try:
             # Calculate value remaining and discount
             value_remaining_pct = self._calculate_value_remaining_percentage(billing_cycle_info, resource_info)
-            value_remaining_amount = value_remaining_pct * current_plan['amount']
-            discount_pct_of_new_plan = (value_remaining_amount / new_plan['amount']) * 100
+            value_remaining_amount = value_remaining_pct * self._ensure_float(current_plan['amount'])
+            discount_pct_of_new_plan = (value_remaining_amount / self._ensure_float(new_plan['amount'])) * 100
             
             discount_result = self._get_discount_offer_for_value(discount_pct_of_new_plan)
             if discount_result.get('error'):
                 return discount_result
             
             discount_offer_pct = discount_result
-            discount_amount = (discount_offer_pct / 100) * new_plan['amount']
+            discount_amount = (discount_offer_pct / 100) * self._ensure_float(new_plan['amount'])
             
             # Detect payment method
             payment_method = self._get_subscription_payment_method(subscription)
@@ -3417,15 +3424,15 @@ class PaymentService:
         try:
             # Calculate value remaining and messaging
             value_remaining_pct = self._calculate_value_remaining_percentage(billing_cycle_info, resource_info)
-            value_remaining_amount = value_remaining_pct * current_plan['amount']
-            discount_pct_of_new_plan = (value_remaining_amount / new_plan['amount']) * 100
+            value_remaining_amount = value_remaining_pct * self._ensure_float(current_plan['amount'])
+            discount_pct_of_new_plan = (value_remaining_amount / self._ensure_float(new_plan['amount'])) * 100
             
             discount_result = self._get_discount_offer_for_value(discount_pct_of_new_plan)
             if discount_result.get('error'):
                 return discount_result
             
             discount_offer_pct = discount_result
-            discount_amount = (discount_offer_pct / 100) * new_plan['amount']
+            discount_amount = (discount_offer_pct / 100) * self._ensure_float(new_plan['amount'])
             
             # Create detailed message
             time_remaining = billing_cycle_info['time_factor'] * 100
@@ -3560,7 +3567,7 @@ class PaymentService:
             if (time_remaining_pct - resource_remaining_pct) >= 0.05:
                 # Calculate additional payment
                 excess_consumption_pct = (time_remaining_pct - resource_remaining_pct) - 0.05
-                additional_amount = excess_consumption_pct * current_plan['amount']
+                additional_amount = excess_consumption_pct * self._ensure_float(current_plan['amount'])
                 
                 # Create additional invoice
                 additional_payment_result = self._create_additional_payment_invoice(
@@ -3658,7 +3665,7 @@ class PaymentService:
         try:
             # Calculate proration amount and messaging
             value_remaining_pct = self._calculate_value_remaining_percentage(billing_cycle_info, resource_info)
-            remaining_period_value = value_remaining_pct * new_plan['amount']
+            remaining_period_value = value_remaining_pct * self._ensure_float(new_plan['amount'])
             
             time_remaining = billing_cycle_info['time_factor'] * 100
             resource_remaining = (1 - resource_info['base_plan_consumed_pct']) * 100
