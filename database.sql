@@ -1,7 +1,4 @@
-CREATE DATABASE battlecards;
-USE battlecards;
-
-CREATE TABLE `subscription_plans` (
+  CREATE TABLE `subscription_plans` (
   `id` varchar(64) NOT NULL,
   `name` varchar(255) NOT NULL,
   `description` text,
@@ -18,7 +15,7 @@ CREATE TABLE `subscription_plans` (
   `plan_type` enum('domestic','international') NOT NULL DEFAULT 'domestic',
   `payment_gateways` json DEFAULT NULL,
   PRIMARY KEY (`id`)
-);
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci;
 
 CREATE TABLE `user_subscriptions` (
   `id` varchar(64) NOT NULL,
@@ -38,12 +35,12 @@ CREATE TABLE `user_subscriptions` (
   PRIMARY KEY (`id`),
   KEY `user_id` (`user_id`),
   KEY `plan_id` (`plan_id`),
+  KEY `idx_user_subscriptions_user_app` (`user_id`, `app_id`),
+  KEY `idx_user_subscriptions_status` (`status`),
+  KEY `idx_user_subscriptions_razorpay` (`razorpay_subscription_id`),
+  KEY `idx_user_subscriptions_paypal` (`paypal_subscription_id`),
   CONSTRAINT `user_subscriptions_ibfk_1` FOREIGN KEY (`plan_id`) REFERENCES `subscription_plans` (`id`)
-  CREATE INDEX `idx_user_subscriptions_user_app` ON `user_subscriptions` (`user_id`, `app_id`);
-  CREATE INDEX `idx_user_subscriptions_status` ON `user_subscriptions` (`status`);
-  CREATE INDEX `idx_user_subscriptions_razorpay` ON `user_subscriptions` (`razorpay_subscription_id`);
-  CREATE INDEX `idx_user_subscriptions_paypal` ON `user_subscriptions` (`paypal_subscription_id`);
-);
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci;
 
 CREATE TABLE `paypal_access_tokens` (
   `id` int NOT NULL AUTO_INCREMENT,
@@ -51,13 +48,16 @@ CREATE TABLE `paypal_access_tokens` (
   `expires_at` datetime NOT NULL,
   `created_at` datetime DEFAULT CURRENT_TIMESTAMP,
   PRIMARY KEY (`id`)
-);
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci;
 
 CREATE TABLE `subscription_invoices` (
   `id` varchar(64) NOT NULL,
   `subscription_id` varchar(64) NOT NULL,
   `user_id` varchar(255) NOT NULL,
   `razorpay_invoice_id` varchar(255) DEFAULT NULL,
+  `razorpay_payment_id` varchar(255) DEFAULT NULL,
+  `paypal_invoice_id` varchar(255) DEFAULT NULL,
+  `paypal_payment_id` varchar(255) DEFAULT NULL,
   `amount` decimal(10,2) DEFAULT NULL,
   `currency` varchar(10) DEFAULT 'INR',
   `payment_method` varchar(20) DEFAULT NULL,
@@ -70,10 +70,11 @@ CREATE TABLE `subscription_invoices` (
   PRIMARY KEY (`id`),
   KEY `subscription_id` (`subscription_id`),
   KEY `user_id` (`user_id`),
+  KEY `idx_subscription_invoices_razorpay_payment` (`razorpay_payment_id`),
+  KEY `idx_subscription_invoices_paypal_payment` (`paypal_payment_id`),
+  KEY `idx_subscription_invoices_paypal_invoice` (`paypal_invoice_id`),
   CONSTRAINT `subscription_invoices_ibfk_1` FOREIGN KEY (`subscription_id`) REFERENCES `user_subscriptions` (`id`)
-);
-
-
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci;
 
 CREATE TABLE `resource_usage` (
   `id` int NOT NULL AUTO_INCREMENT,
@@ -99,9 +100,9 @@ CREATE TABLE `resource_usage` (
   KEY `user_id` (`user_id`),
   KEY `subscription_id` (`subscription_id`),
   KEY `app_id` (`app_id`),
-  KEY `billing_period_start` (`billing_period_start`,`billing_period_end`),
+  KEY `billing_period_start_end` (`billing_period_start`,`billing_period_end`),
   CONSTRAINT `resource_usage_ibfk_1` FOREIGN KEY (`subscription_id`) REFERENCES `user_subscriptions` (`id`)
-);
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci;
 
 CREATE TABLE `subscription_events_log` (
   `id` int NOT NULL AUTO_INCREMENT,
@@ -118,9 +119,8 @@ CREATE TABLE `subscription_events_log` (
   KEY `idx_user_id` (`user_id`),
   KEY `idx_event_type` (`event_type`),
   KEY `idx_processed` (`processed`)
-);
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci;
 
--- Add new audit trail table
 CREATE TABLE `subscription_audit_log` (
   `id` int NOT NULL AUTO_INCREMENT,
   `subscription_id` varchar(64) NOT NULL,
@@ -134,9 +134,8 @@ CREATE TABLE `subscription_audit_log` (
   KEY `action_type` (`action_type`),
   KEY `user_id` (`user_id`),
   KEY `created_at` (`created_at`)
-);
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci;
 
--- Add webhook idempotency table
 CREATE TABLE `webhook_events_processed` (
   `id` int NOT NULL AUTO_INCREMENT,
   `event_id` varchar(255) NOT NULL,
@@ -144,10 +143,8 @@ CREATE TABLE `webhook_events_processed` (
   `processed_at` datetime DEFAULT CURRENT_TIMESTAMP,
   PRIMARY KEY (`id`),
   UNIQUE KEY `unique_event_provider` (`event_id`, `provider`)
-);
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci;
 
--- Add addon purchase table
--- Create resource_addons table with matching character set/collation
 CREATE TABLE `resource_addons` (
   `id` varchar(64) NOT NULL,
   `user_id` varchar(255) NOT NULL,
@@ -171,36 +168,34 @@ CREATE TABLE `resource_addons` (
   CONSTRAINT `resource_addons_ibfk_1` FOREIGN KEY (`subscription_id`) REFERENCES `user_subscriptions` (`id`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci;
 
--- Create razorpay_offers table
-CREATE TABLE razorpay_offers (
-    id VARCHAR(50) PRIMARY KEY,
-    discount_percentage INT NOT NULL,
-    payment_method ENUM('upi', 'card') NOT NULL,
-    offer_id VARCHAR(100) NOT NULL,
-    title VARCHAR(100) NOT NULL,
-    status ENUM('enabled', 'disabled') DEFAULT 'enabled',
-    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
-    INDEX idx_discount_method (discount_percentage, payment_method)
-);
+CREATE TABLE `razorpay_offers` (
+  `id` VARCHAR(50) PRIMARY KEY,
+  `discount_percentage` INT NOT NULL,
+  `payment_method` ENUM('upi', 'card') NOT NULL,
+  `offer_id` VARCHAR(100) NOT NULL,
+  `title` VARCHAR(100) NOT NULL,
+  `status` ENUM('enabled', 'disabled') DEFAULT 'enabled',
+  `created_at` TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+  `updated_at` TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  INDEX `idx_discount_method` (`discount_percentage`, `payment_method`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci;
 
--- Create manual_refunds table
-CREATE TABLE manual_refunds (
-    id VARCHAR(50) PRIMARY KEY,
-    user_id VARCHAR(100) NOT NULL,
-    subscription_id VARCHAR(100) NOT NULL,
-    refund_amount DECIMAL(10,2) NOT NULL,
-    currency VARCHAR(10) DEFAULT 'INR',
-    original_payment_method VARCHAR(50),
-    status ENUM('scheduled', 'processing', 'completed', 'failed') DEFAULT 'scheduled',
-    reason VARCHAR(255),
-    admin_notes TEXT,
-    processed_by VARCHAR(100),
-    scheduled_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    processed_at TIMESTAMP NULL,
-    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
-    INDEX idx_user_status (user_id, status),
-    INDEX idx_scheduled_date (scheduled_at),
-    INDEX idx_status (status)
-);
+CREATE TABLE `manual_refunds` (
+  `id` VARCHAR(50) PRIMARY KEY,
+  `user_id` VARCHAR(100) NOT NULL,
+  `subscription_id` VARCHAR(100) NOT NULL,
+  `refund_amount` DECIMAL(10,2) NOT NULL,
+  `currency` VARCHAR(10) DEFAULT 'INR',
+  `original_payment_method` VARCHAR(50),
+  `status` ENUM('scheduled', 'processing', 'completed', 'failed') DEFAULT 'scheduled',
+  `reason` VARCHAR(255),
+  `admin_notes` TEXT,
+  `processed_by` VARCHAR(100),
+  `scheduled_at` TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+  `processed_at` TIMESTAMP NULL DEFAULT NULL,
+  `created_at` TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+  `updated_at` TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  INDEX `idx_user_status` (`user_id`, `status`),
+  INDEX `idx_scheduled_date` (`scheduled_at`),
+  INDEX `idx_status` (`status`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci;
