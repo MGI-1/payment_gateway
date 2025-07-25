@@ -174,39 +174,30 @@ def calculate_resource_utilization(usage_data, plan_features, app_id):
         }
 
 def calculate_advanced_proration(current_plan, new_plan, billing_cycle_info, resource_info, minimum_charge=50):
-    """
-    Calculate proration using price difference method (Approach A)
-    Use HIGHER of time consumed % or resource consumed % 
-    """
+    """Calculate proration with proper decimal handling"""
     time_consumed_pct = 1 - billing_cycle_info['time_factor']
     resource_consumed_pct = resource_info['base_plan_consumed_pct']
     
-    # Use HIGHER of the two percentages (max billing cycle consumed)
     billing_cycle_consumed_pct = max(time_consumed_pct, resource_consumed_pct)
     remaining_billing_cycle_pct = 1 - billing_cycle_consumed_pct
     
-    # Convert Decimal to float to fix the multiplication error
-    current_amount = float(current_plan['amount'])
-    new_amount = float(new_plan['amount'])
+    # ✅ FIX: Convert Decimal to float for calculations
+    current_amount = float(current_plan['amount']) if current_plan['amount'] else 0
+    new_amount = float(new_plan['amount']) if new_plan['amount'] else 0
     
-    # Standard approach: Price difference × remaining percentage
     price_difference = new_amount - current_amount
     
     if price_difference <= 0:
-        # Downgrade - not supported, return message
         return {
             'is_downgrade': True,
-            'message': 'To downgrade your plan, please contact our support team. Your downgrade will be processed at the end of your current billing cycle.',
+            'message': 'To downgrade your plan, please contact our support team.',
             'current_plan': current_plan['name'],
             'requested_plan': new_plan['name'],
             'contact_info': 'support@yourcompany.com',
             'action_required': 'contact_support'
         }
     else:
-        # Upgrade - calculate additional charge
         prorated_amount = price_difference * remaining_billing_cycle_pct
-        
-        # Apply minimum charge for upgrades
         if 0 < prorated_amount < minimum_charge:
             prorated_amount = minimum_charge
 
