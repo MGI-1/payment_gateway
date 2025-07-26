@@ -4655,6 +4655,117 @@ class PaymentService:
             logger.error(f"Error marking subscription scheduled for cancellation: {str(e)}")
             raise
 
+    def _execute_cancel_and_recreate_with_discount(self, user_id, subscription_id, current_plan, new_plan, 
+                                                app_id, discount_pct, discount_amount, payment_method, value_remaining_pct):
+        """Execute cancel and recreate flow with discount offer"""
+        try:
+            # Step 1: Cancel current subscription
+            cancel_result = self._cancel_razorpay_subscription_immediately(
+                self._get_subscription_by_id(subscription_id)
+            )
+            
+            if cancel_result.get('error'):
+                logger.error(f"Error cancelling subscription during upgrade: {cancel_result.get('message')}")
+                
+            # Step 2: Get appropriate offer ID for the discount percentage and payment method
+            offer_id = self._get_razorpay_offer_id(discount_pct, payment_method)
+            
+            # Step 3: Create new subscription with discount
+            new_subscription = self._create_subscription_with_specific_offer(
+                user_id, new_plan['id'], app_id, offer_id, payment_method
+            )
+            
+            # Step 4: Log the upgrade action
+            self.db.log_subscription_action(
+                subscription_id,
+                f"upgrade_{payment_method}_with_discount",
+                {
+                    'old_plan_id': current_plan['id'],
+                    'new_plan_id': new_plan['id'],
+                    'discount_pct': discount_pct,
+                    'discount_amount': discount_amount,
+                    'offer_id': offer_id,
+                    'value_remaining_pct': value_remaining_pct
+                },
+                f"user_{user_id}"
+            )
+            
+            # Step 5: Return success with discount details
+            return {
+                'success': True,
+                'upgrade_type': 'cancel_and_recreate_with_discount',
+                'payment_method': payment_method,
+                'old_subscription_id': subscription_id, 
+                'new_subscription': new_subscription,
+                'discount_applied': discount_pct,
+                'discount_amount': discount_amount,
+                'final_amount': new_plan['amount'] - discount_amount,
+                'offer_id_used': offer_id,
+                'razorpay_link': new_subscription.get('short_url'),
+                'currency': current_plan.get('currency', 'INR')
+            }
+            
+        except Exception as e:
+            logger.error(f"Error in cancel and recreate with discount: {str(e)}")
+            return {
+                'success': False, 
+                'error': str(e),
+                'error_type': 'execution_error'
+            }
+
+    def _execute_cancel_and_recreate_with_refund(self, user_id, subscription_id, current_plan, new_plan, 
+                                            app_id, refund_amount, payment_method):
+        """Execute cancel and recreate flow with manual refund"""
+        try:
+            # Step 1: Cancel current subscription
+            cancel_result = self._cancel_razorpay_subscription_immediately(
+                self._get_subscription_by_id(subscription_id)
+            )
+            
+            # Step 2: Create new subscription at full price
+            new_subscription = self._create_subscription_full_price(
+                user_id, new_plan['id'], app_id
+            )
+            
+            # Step 3: Schedule manual refund
+            refund_id = self._schedule_manual_refund(
+                user_id, subscription_id, refund_amount, current_plan, payment_method
+            )
+            
+            # Step 4: Log the upgrade action
+            self.db.log_subscription_action(
+                subscription_id,
+                f"upgrade_{payment_method}_with_refund",
+                {
+                    'old_plan_id': current_plan['id'],
+                    'new_plan_id': new_plan['id'],
+                    'refund_amount': refund_amount,
+                    'refund_id': refund_id
+                },
+                f"user_{user_id}"
+            )
+            
+            # Step 5: Return success with refund details
+            return {
+                'success': True,
+                'upgrade_type': 'cancel_and_recreate_with_refund',
+                'payment_method': payment_method,
+                'old_subscription_id': subscription_id,
+                'new_subscription': new_subscription,
+                'refund_amount': refund_amount,
+                'refund_id': refund_id,
+                'razorpay_link': new_subscription.get('short_url'),
+                'currency': current_plan.get('currency', 'INR')
+            }
+            
+        except Exception as e:
+            logger.error(f"Error in cancel and recreate with refund: {str(e)}")
+            return {
+                'success': False,
+                'error': str(e),
+                'error_type': 'execution_error'
+            }
+
     def _mark_paypal_subscription_cancelled(self, subscription_id, subscription):
         """Mark PayPal subscription as cancelled but keep access until period end"""
         try:
