@@ -756,6 +756,82 @@ class PaymentService:
             return self._handle_razorpay_subscription_cancelled(payload)
         else:
             return {'status': 'ignored', 'message': f'Unhandled event type: {event_type}'}
+
+    def _handle_other_payment_upgrade_with_refund(self, subscription, current_plan, new_plan, app_id, value_remaining_amount):
+        """Handle other payment methods (NetBanking, etc.) with refund flow"""
+        logger.info(f"[UPGRADE] Handling other payment method upgrade with refund")
+        
+        try:
+            # Create data for cancel and recreate flow
+            subscription_id = subscription['id']
+            user_id = subscription['user_id']
+            
+            # Execute refund-based upgrade
+            return self._execute_cancel_and_recreate_with_refund(
+                user_id=user_id,
+                subscription_id=subscription_id,
+                current_plan=current_plan,
+                new_plan=new_plan,
+                app_id=app_id,
+                refund_amount=value_remaining_amount,
+                payment_method='other'
+            )
+        except Exception as e:
+            logger.error(f"[UPGRADE] Error in other payment upgrade with refund: {str(e)}")
+            raise        
+
+    def _handle_card_upgrade_with_discount(self, subscription, current_plan, new_plan, app_id, 
+                                        discount_offer_pct, discount_amount, value_remaining_pct):
+        """Handle card payment method upgrade with discount offer"""
+        logger.info(f"[UPGRADE] Handling Card upgrade with {discount_offer_pct}% discount")
+        
+        try:
+            # Create data for cancel and recreate flow
+            subscription_id = subscription['id']
+            user_id = subscription['user_id']
+            
+            # Standard cancel and recreate flow with discount
+            return self._execute_cancel_and_recreate_with_discount(
+                user_id=user_id,
+                subscription_id=subscription_id,
+                current_plan=current_plan,
+                new_plan=new_plan,
+                app_id=app_id,
+                discount_pct=discount_offer_pct,
+                discount_amount=discount_amount,
+                payment_method='card',
+                value_remaining_pct=value_remaining_pct
+            )
+        except Exception as e:
+            logger.error(f"[UPGRADE] Error in Card upgrade with discount: {str(e)}")
+            raise
+
+
+    def _handle_upi_upgrade_with_discount(self, subscription, current_plan, new_plan, app_id, 
+                                      discount_offer_pct, discount_amount, value_remaining_pct):
+        """Handle UPI payment method upgrade with discount offer"""
+        logger.info(f"[UPGRADE] Handling UPI upgrade with {discount_offer_pct}% discount")
+        
+        try:
+            # Create data for cancel and recreate flow
+            subscription_id = subscription['id']
+            user_id = subscription['user_id']
+            
+            # Standard cancel and recreate flow with discount
+            return self._execute_cancel_and_recreate_with_discount(
+                user_id=user_id,
+                subscription_id=subscription_id,
+                current_plan=current_plan,
+                new_plan=new_plan,
+                app_id=app_id,
+                discount_pct=discount_offer_pct,
+                discount_amount=discount_amount,
+                payment_method='upi',
+                value_remaining_pct=value_remaining_pct
+            )
+        except Exception as e:
+            logger.error(f"[UPGRADE] Error in UPI upgrade with discount: {str(e)}")
+            raise
     
     def _handle_razorpay_subscription_authenticated(self, payload):
         """Handle subscription.authenticated webhook event"""
