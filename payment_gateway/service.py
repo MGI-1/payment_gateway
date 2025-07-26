@@ -2746,33 +2746,38 @@ class PaymentService:
             discount_pct_of_new_plan = (value_remaining_amount / self._ensure_float(new_plan['amount'])) * 100
             
             discount_result = self._get_discount_offer_for_value(discount_pct_of_new_plan)
-            if discount_result.get('error'):
-                return discount_result
             
-            discount_offer_pct = discount_result
+            # FIX: Check if discount_result is a dictionary (error case) or an integer (discount percentage)
+            if isinstance(discount_result, dict):
+                if discount_result.get('error'):
+                    return discount_result
+                discount_offer_pct = discount_result.get('discount_pct', 0)
+            else:
+                # It's an integer from test discount function
+                discount_offer_pct = discount_result
+                
             discount_amount = (discount_offer_pct / 100) * self._ensure_float(new_plan['amount'])
             
             # Detect payment method
             payment_method = self._get_subscription_payment_method(subscription)
-            logger.info(f"[UPGRADE] Detected payment method: {payment_method}")
             
-            # Calculate messaging components
-            time_remaining = billing_cycle_info['time_factor'] * 100
-            resource_remaining = (1 - resource_info['base_plan_consumed_pct']) * 100
-            
-            if payment_method in ['upi', 'card']:
-                # UPI/Card: Use discount offers
-                return self._handle_inr_upgrade_with_discount(
+            # Different logic based on payment method
+            if payment_method == 'upi':
+                logger.info("[UPGRADE] UPI payment detected, using discount cancellation flow")
+                return self._handle_upi_upgrade_with_discount(
                     subscription, current_plan, new_plan, app_id,
-                    discount_offer_pct, discount_amount, payment_method,
-                    time_remaining, resource_remaining, value_remaining_amount
+                    discount_offer_pct, discount_amount, value_remaining_pct
+                )
+            elif payment_method == 'card':
+                logger.info("[UPGRADE] Card payment detected, using discount cancellation flow")
+                return self._handle_card_upgrade_with_discount(
+                    subscription, current_plan, new_plan, app_id,
+                    discount_offer_pct, discount_amount, value_remaining_pct
                 )
             else:
-                # Other methods: Full payment + manual refund
-                return self._handle_inr_upgrade_with_refund(
-                    subscription, current_plan, new_plan, app_id,
-                    discount_offer_pct, discount_amount, payment_method,
-                    time_remaining, resource_remaining, value_remaining_amount
+                logger.info("[UPGRADE] Other payment method detected, using refund flow")
+                return self._handle_other_payment_upgrade_with_refund(
+                    subscription, current_plan, new_plan, app_id, value_remaining_amount
                 )
                 
         except Exception as e:
