@@ -3797,26 +3797,32 @@ class PaymentService:
             logger.error(f"Error in annual USD PayPal upgrade: {str(e)}")
             raise
 
-    # Supporting methods
+        # Supporting methods
     def _cancel_razorpay_subscription_immediately(self, subscription):
         """Cancel Razorpay subscription immediately"""
         try:
-            if subscription.get('razorpay_subscription_id'):
-                result = self.razorpay.cancel_subscription(
-                    subscription['razorpay_subscription_id'],
-                    cancel_at_cycle_end=False
-                )
-                
-                if not result.get('error'):
-                    self._update_subscription_status_by_razorpay_id(
-                        subscription['razorpay_subscription_id'], 
-                        'cancelled'
-                    )
-                
-                return result
+            if isinstance(subscription, dict) and subscription.get('razorpay_subscription_id'):
+                razorpay_subscription_id = subscription.get('razorpay_subscription_id')
             else:
+                razorpay_subscription_id = subscription  # Assume it's a direct ID
+                
+            if not razorpay_subscription_id:
                 return {'success': True, 'message': 'No Razorpay subscription to cancel'}
+                
+            result = self.razorpay.cancel_subscription(
+                razorpay_subscription_id,
+                cancel_at_cycle_end=False
+            )
+            
+            if not result.get('error'):
+                self._update_subscription_status_by_razorpay_id(
+                    razorpay_subscription_id, 
+                    'cancelled'
+                )
+            
+            return result
         except Exception as e:
+            logger.error(f"Error cancelling Razorpay subscription: {str(e)}")
             return {'error': True, 'message': str(e)}
 
     def _create_subscription_with_discount(self, user_id, plan_id, app_id, discount_pct):
@@ -4765,6 +4771,26 @@ class PaymentService:
                 'error': str(e),
                 'error_type': 'execution_error'
             }
+
+    def _get_subscription_by_id(self, subscription_id):
+        """Get subscription object by ID"""
+        try:
+            conn = self.db.get_connection()
+            cursor = conn.cursor(dictionary=True)
+            
+            cursor.execute(f"""
+                SELECT * FROM {DB_TABLE_USER_SUBSCRIPTIONS}
+                WHERE id = %s
+            """, (subscription_id,))
+            
+            subscription = cursor.fetchone()
+            cursor.close()
+            conn.close()
+            
+            return subscription
+        except Exception as e:
+            logger.error(f"Error getting subscription by ID: {str(e)}")
+            return None
 
     def _mark_paypal_subscription_cancelled(self, subscription_id, subscription):
         """Mark PayPal subscription as cancelled but keep access until period end"""
