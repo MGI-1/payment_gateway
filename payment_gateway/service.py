@@ -2922,14 +2922,14 @@ class PaymentService:
                 'discount_applied': discount_offer_pct,
                 'discount_amount': discount_amount,
                 'offer_id_used': offer_id,
-                'final_amount': new_plan['amount'] - discount_amount,
+                'final_amount': float(new_plan['amount']) - float(discount_amount),
                 'message': message,
                 'razorpay_link': new_subscription_result.get('short_url'),
                 'calculation_details': {
                     'original_price': new_plan['amount'],
                     'discount_percentage': discount_offer_pct,
                     'discount_amount': discount_amount,
-                    'final_amount': new_plan['amount'] - discount_amount,
+                    'final_amount': float(new_plan['amount']) - float(discount_amount),
                     'remaining_value_adjustment': True
                 }
             }
@@ -4693,7 +4693,8 @@ class PaymentService:
                     'offer_id': offer_id,
                     'value_remaining_pct': value_remaining_pct
                 },
-                f"user_{user_id}"
+                f"user_{user_id}",
+                "manual"  # Add default provider
             )
             
             # Step 5: Return success with discount details
@@ -4705,7 +4706,7 @@ class PaymentService:
                 'new_subscription': new_subscription,
                 'discount_applied': discount_pct,
                 'discount_amount': discount_amount,
-                'final_amount': new_plan['amount'] - discount_amount,
+                'final_amount': float(new_plan['amount']) - float(discount_amount),
                 'offer_id_used': offer_id,
                 'razorpay_link': new_subscription.get('short_url'),
                 'currency': current_plan.get('currency', 'INR')
@@ -4748,7 +4749,8 @@ class PaymentService:
                     'refund_amount': refund_amount,
                     'refund_id': refund_id
                 },
-                f"user_{user_id}"
+                f"user_{user_id}",
+                "manual"  # Add default provider
             )
             
             # Step 5: Return success with refund details
