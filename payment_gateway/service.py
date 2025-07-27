@@ -1079,16 +1079,16 @@ class PaymentService:
                         subscription['app_id']
                     )
                     
-                    # Log plan change event
                     self._log_subscription_event(
                         subscription['user_id'],
-                        subscription['id'], 
-                        'plan_changed_manually',
+                        subscription['id'],
+                        'payment_method_changed',
                         {
-                            'old_plan_id': database_plan_id,
-                            'new_plan_id': new_plan['id'],
-                            'changed_via': 'razorpay_admin'
-                        }
+                            'old_method': last_payment_method,
+                            'new_method': current_payment_method,
+                            'change_detected_in': 'subscription_charged_webhook'
+                        },
+                        'razorpay'  # Add provider
                     )
                     
                     logger.info(f"Plan change synced: User {subscription['user_id']} moved to {new_plan['name']}")
@@ -1294,7 +1294,7 @@ class PaymentService:
                 conn.close()
             return 'unknown'
 
-    def _log_subscription_event(self, user_id, subscription_id, event_type, event_data=None):
+    def _log_subscription_event(self, user_id, subscription_id, event_type, event_data=None, provider='system'):
         """Log subscription events for audit trail"""
         try:
             conn = self.db.get_connection()
@@ -1304,14 +1304,15 @@ class PaymentService:
             
             cursor.execute("""
                 INSERT INTO subscription_events_log 
-                (id, user_id, subscription_id, event_type, event_data, created_at)
-                VALUES (%s, %s, %s, %s, %s, NOW())
+                (id, user_id, subscription_id, event_type, event_data, provider, created_at)
+                VALUES (%s, %s, %s, %s, %s, %s, NOW())
             """, (
                 event_id,
                 user_id,
                 subscription_id,
                 event_type,
-                json.dumps(event_data) if event_data else None
+                json.dumps(event_data) if event_data else None,
+                provider
             ))
             
             conn.commit()
@@ -3824,7 +3825,7 @@ class PaymentService:
         except Exception as e:
             logger.error(f"Error cancelling Razorpay subscription: {str(e)}")
             return {'error': True, 'message': str(e)}
-
+        
     def _create_subscription_with_discount(self, user_id, plan_id, app_id, discount_pct):
         """Create new subscription with discount offer"""
         try:
@@ -4693,8 +4694,7 @@ class PaymentService:
                     'offer_id': offer_id,
                     'value_remaining_pct': value_remaining_pct
                 },
-                f"user_{user_id}",
-                "manual"  # Add default provider
+                f"user_{user_id}"
             )
             
             # Step 5: Return success with discount details
@@ -4749,8 +4749,7 @@ class PaymentService:
                     'refund_amount': refund_amount,
                     'refund_id': refund_id
                 },
-                f"user_{user_id}",
-                "manual"  # Add default provider
+                f"user_{user_id}"
             )
             
             # Step 5: Return success with refund details
