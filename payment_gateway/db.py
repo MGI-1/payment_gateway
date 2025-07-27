@@ -49,8 +49,8 @@ class DatabaseManager:
             logger.error(f"Error initializing database tables: {str(e)}")
             logger.error(traceback.format_exc())
             return False
-    
-    def log_event(self, event_type, entity_id, user_id, data, provider='razorpay', processed=False):
+        
+    def log_event(self, event_type, entity_id, user_id, data, provider=None, processed=False):
         """Log a payment event for debugging and auditing"""
         try:
             conn = self.get_connection()
@@ -58,6 +58,20 @@ class DatabaseManager:
             
             # Convert data to JSON string if it's a dict
             data_json = json.dumps(data) if isinstance(data, dict) else data
+            
+            # Ensure provider is never null
+            if provider is None:
+                # Determine provider based on event type if possible
+                if 'razorpay' in str(event_type).lower():
+                    provider = 'razorpay'
+                elif 'paypal' in str(event_type).lower():
+                    provider = 'paypal'
+                elif 'admin' in str(event_type).lower() or str(user_id).lower() == 'admin':
+                    provider = 'admin'
+                else:
+                    provider = 'system'  # Default fallback
+            
+            logger.debug(f"Logging event: {event_type} with provider: {provider}")
             
             cursor.execute(f'''
                 INSERT INTO {DB_TABLE_SUBSCRIPTION_EVENTS}
