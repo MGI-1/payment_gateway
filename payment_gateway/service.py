@@ -180,6 +180,8 @@ class PaymentService:
 
     def _get_currency_and_gateway_from_plan(self, plan):
         """Determine currency and preferred gateway from plan"""
+        from .utils.helpers import parse_json_field  # Import the utility
+        
         currency = plan.get('currency')
         
         if currency not in ['INR', 'USD']:
@@ -190,12 +192,13 @@ class PaymentService:
                 'action_required': 'contact_support'
             })
         
-        payment_gateways = plan.get('payment_gateways', ['razorpay'])
+        # Use parse_json_field to safely handle JSON conversion
+        payment_gateways = parse_json_field(plan.get('payment_gateways'), ['razorpay'])
         
         if currency == 'INR':
             return 'INR', 'razorpay'
         else:  # USD
-            preferred_gateway = payment_gateways[0] if payment_gateways else 'razorpay'
+            preferred_gateway = payment_gateways[0] if payment_gateways else 'paypal'
             return 'USD', preferred_gateway
 
     def _is_monthly_plan(self, plan):
