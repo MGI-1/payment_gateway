@@ -2000,84 +2000,31 @@ class PaymentService:
        return quota
 
     def check_resource_availability(self, user_id, app_id, resource_type, count=1):
-        """Check resource availability with subscription status validation"""
+        """Check if a user has enough resources for an action"""
         try:
-            # Check if subscription is active first
-            subscription = self.get_user_subscription(user_id, app_id)
+            # Ensure user has a resource quota entry
+            ensure_result = self.ensure_user_has_resource_quota(user_id, app_id)
+            if not ensure_result:
+                # This could be due to problematic subscription statuses or other errors
+                return False
             
-            if subscription:
-                subscription_status = subscription.get('status')
+            # Get the user's resource quota
+            quota = self.get_resource_quota(user_id, app_id)
+            
+            # Check if the quota is enough for the requested count
+            if resource_type in quota:
+                is_available = quota[resource_type] >= count
+                return is_available
+            
+            # If resource type not found in quota, assume unavailable
+            logger.warning(f"[AZURE DEBUG] Resource type {resource_type} not found in quota for user {user_id}")
+            return False
                 
-                # Block access if subscription is suspended
-                if subscription_status == 'halted':
-                    return {
-                        'available': False,
-                        'error': 'subscription_suspended',
-                        'message': 'Your subscription is suspended due to payment failure. Please update your payment method.',
-                        'current_quota': 0,
-                        'requested': count
-                    }
-                
-                # Block access if subscription is cancelled
-                if subscription_status == 'cancelled':
-                    return {
-                        'available': False,
-                        'error': 'subscription_cancelled', 
-                        'message': 'Your subscription has been cancelled. Please subscribe to continue using premium features.',
-                        'current_quota': 0,
-                        'requested': count
-                    }
-            
-            # Get current resource usage
-            conn = self.db.get_connection()
-            cursor = conn.cursor(dictionary=True)
-            
-            cursor.execute(f"""
-                SELECT quota_limit, current_usage 
-                FROM {DB_TABLE_RESOURCE_USAGE}
-                WHERE user_id = %s AND app_id = %s AND resource_type = %s
-            """, (user_id, app_id, resource_type))
-            
-            quota_record = cursor.fetchone()
-            cursor.close()
-            conn.close()
-            
-            if not quota_record:
-                # No quota record found - this might be a free user or initialization issue
-                logger.warning(f"No quota record found for user {user_id}, resource {resource_type}")
-                return {
-                    'available': False,
-                    'error': 'quota_not_initialized',
-                    'message': 'Resource quota not found. Please contact support.',
-                    'current_quota': 0,
-                    'requested': count
-                }
-            
-            quota_limit = quota_record['quota_limit']
-            current_usage = quota_record['current_usage']
-            remaining = quota_limit - current_usage
-            
-            # Check if requested amount is available
-            is_available = remaining >= count
-            
-            return {
-                'available': is_available,
-                'current_quota': remaining,
-                'quota_limit': quota_limit,
-                'current_usage': current_usage,
-                'requested': count,
-                'message': f"{remaining} {resource_type} remaining" if is_available else f"Insufficient {resource_type}. {remaining} remaining, {count} requested."
-            }
-            
         except Exception as e:
-            logger.error(f"Error checking resource availability: {str(e)}")
-            return {
-                'available': False,
-                'error': 'system_error',
-                'message': 'Unable to check resource availability. Please try again.',
-                'current_quota': 0,
-                'requested': count
-            }
+            logger.error(f"[AZURE DEBUG] Error in check_resource_availability: {str(e)}")
+            logger.error(traceback.format_exc())
+            # Default to not available on error
+            return False
 
     def decrement_resource_quota(self, user_id, app_id, resource_type, count=1):
        """Decrement resource quota for a user."""
@@ -2283,25 +2230,31 @@ class PaymentService:
            return None
 
     def ensure_user_has_resource_quota(self, user_id, app_id='marketfit'):
-       """Ensure a user has a resource quota entry in the database."""
-       
-       try:
-           # Get or create subscription
-           subscription = self._get_or_create_subscription(user_id, app_id)
-           if not subscription:
-               return False
-           
-           # Check if quota entry exists
-           if self._quota_entry_exists(user_id, subscription['id'], app_id):
-               return True
-           
-           # Create quota entry
-           return self._create_quota_entry(user_id, subscription, app_id)
-           
-       except Exception as e:
-           logger.error(f"[AZURE DEBUG] Error in ensure_user_has_resource_quota: {str(e)}")
-           logger.error(traceback.format_exc())
-           return False
+        """Ensure a user has a resource quota entry in the database."""
+        
+        try:
+            # First check if there are any problematic subscription statuses
+            status_issue = self._check_subscription_status_issues(user_id, app_id)
+            if status_issue:
+                logger.warning(f"[AZURE DEBUG] Cannot ensure quota - user {user_id} has {status_issue} subscription")
+                return False
+            
+            # Get or create subscription (only returns active subscriptions)
+            subscription = self._get_or_create_subscription(user_id, app_id)
+            if not subscription:
+                return False
+            
+            # Check if quota entry exists
+            if self._quota_entry_exists(user_id, subscription['id'], app_id):
+                return True
+            
+            # Create quota entry
+            return self._create_quota_entry(user_id, subscription, app_id)
+            
+        except Exception as e:
+            logger.error(f"[AZURE DEBUG] Error in ensure_user_has_resource_quota: {str(e)}")
+            logger.error(traceback.format_exc())
+            return False
 
     def _get_or_create_subscription(self, user_id, app_id):
        """Get existing subscription or create free subscription"""
@@ -2347,6 +2300,47 @@ class PaymentService:
            logger.error(f"Error getting active subscription for quota: {str(e)}")
            raise
 
+    def _check_subscription_status_issues(self, user_id, app_id):
+        """
+        Check if user has any subscription statuses that would block resource usage
+        Includes statuses from both Razorpay and PayPal webhooks
+        """
+        try:
+            conn = self.db.get_connection()
+            cursor = conn.cursor(dictionary=True)
+            
+            # All statuses that indicate a subscription is not fully active
+            problematic_statuses = [
+                'created',          # Initial creation, not yet paid (Razorpay)
+                'pending',          # Payment pending (Razorpay) 
+                'halted',           # Payment failed, subscription suspended (Razorpay)
+                'authenticated',    # Payment method authenticated but not active (Razorpay)
+                'payment_failed',   # Failed payment (PayPal)
+                'suspended'         # Suspended subscription (PayPal)
+            ]
+            
+            status_list = ', '.join([f"'{status}'" for status in problematic_statuses])
+            
+            cursor.execute(f"""
+                SELECT id, status FROM {DB_TABLE_USER_SUBSCRIPTIONS}
+                WHERE user_id = %s AND app_id = %s AND status IN ({status_list})
+                ORDER BY created_at DESC LIMIT 1
+            """, (user_id, app_id))
+            
+            problematic_subscription = cursor.fetchone()
+            cursor.close()
+            conn.close()
+            
+            if problematic_subscription:
+                logger.warning(f"[AZURE DEBUG] Found {problematic_subscription['status']} subscription for user {user_id}")
+                return problematic_subscription['status']
+            
+            return None
+            
+        except Exception as e:
+            logger.error(f"Error checking subscription status issues: {str(e)}")
+            return None
+    
     def _get_free_plan(self, app_id):
        """Get free plan with isolated connection"""
        try:
