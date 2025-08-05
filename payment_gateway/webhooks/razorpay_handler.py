@@ -87,6 +87,10 @@ def handle_razorpay_webhook(payment_service):
             
             # Check if this payment was for excess resource consumption
             notes = payment_link_data.get('notes', {})
+            # FIX: Handle notes as list
+            if isinstance(notes, list):
+                notes = {}
+                
             if notes.get('payment_type') == 'excess_consumption':
                 logger.info("Processing excess consumption payment via payment link")
                 subscription_id = notes.get('subscription_id')
@@ -110,7 +114,11 @@ def handle_razorpay_webhook(payment_service):
         elif event_type == 'payment.captured':
             logger.info("Processing payment.captured event")
             payment_data = webhook_data.get('payload', {}).get('payment', {}).get('entity', {})
-            notes = payment_data.get('notes', {})
+            notes = payment_data.get('notes')
+            
+            # FIX: Handle notes as list
+            if notes is None or isinstance(notes, list):
+                notes = {}
             
             # NEW: Check if this is excess consumption payment
             if notes.get('payment_type') == 'excess_consumption':
