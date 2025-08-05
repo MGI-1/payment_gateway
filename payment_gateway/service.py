@@ -745,21 +745,6 @@ class PaymentService:
         
         return entity_id, user_id
 
-    def _handle_razorpay_webhook(self, event_type, payload):
-        """Handle Razorpay webhook events"""
-        if event_type == 'subscription.authenticated':
-            return self._handle_razorpay_subscription_authenticated(payload)
-        elif event_type == 'subscription.activated':
-            return self._handle_razorpay_subscription_activated(payload)
-        elif event_type == 'subscription.charged':
-            return self._handle_razorpay_subscription_charged(payload)
-        elif event_type == 'subscription.completed':
-            return self._handle_razorpay_subscription_completed(payload)
-        elif event_type == 'subscription.cancelled':
-            return self._handle_razorpay_subscription_cancelled(payload)
-        else:
-            return {'status': 'ignored', 'message': f'Unhandled event type: {event_type}'}
-
     def _handle_other_payment_upgrade_with_refund(self, subscription, current_plan, new_plan, app_id, value_remaining_amount):
         """Handle other payment methods (NetBanking, etc.) with refund flow"""
         logger.info(f"[UPGRADE] Handling other payment method upgrade with refund")
@@ -989,26 +974,27 @@ class PaymentService:
         return start_date, period_end
 
     def _get_plan_interval_details(self, plan_id):
-       """Get plan interval details with isolated connection"""
-       try:
-           conn = self.db.get_connection()
-           cursor = conn.cursor(dictionary=True)
-           
-           cursor.execute(f"""
-               SELECT interval, interval_count
-               FROM {DB_TABLE_SUBSCRIPTION_PLANS}
-               WHERE id = %s
-           """, (plan_id,))
-           
-           plan_details = cursor.fetchone()
-           
-           cursor.close()
-           conn.close()
-           return plan_details
-           
-       except Exception as e:
-           logger.error(f"Error getting plan interval details: {str(e)}")
-           return None
+        """Get plan interval details with isolated connection"""
+        try:
+            conn = self.db.get_connection()
+            cursor = conn.cursor(dictionary=True)
+            
+            # Fixed SQL by adding backticks around the reserved keyword 'interval'
+            cursor.execute(f"""
+                SELECT `interval`, interval_count
+                FROM {DB_TABLE_SUBSCRIPTION_PLANS}
+                WHERE id = %s
+            """, (plan_id,))
+            
+            plan_details = cursor.fetchone()
+            
+            cursor.close()
+            conn.close()
+            return plan_details
+            
+        except Exception as e:
+            logger.error(f"Error getting plan interval details: {str(e)}")
+            return None
 
     def _activate_subscription_with_period(self, razorpay_subscription_id, start_date, period_end, subscription_data):
        """Activate subscription with period dates"""
@@ -2678,7 +2664,10 @@ class PaymentService:
         elif event_type == 'subscription.activated':
             return self._handle_razorpay_subscription_activated(payload)
         elif event_type == 'subscription.charged':
-            return self._handle_razorpay_subscription_charged(payload)
+            # Fix: Extract both subscription_data and payment_data from payload
+            subscription_data = self._extract_charged_subscription_data(payload)
+            payment_data = payload.get('payload', {}).get('payment', {}).get('entity', {})
+            return self._handle_razorpay_subscription_charged(subscription_data, payment_data)
         elif event_type == 'subscription.completed':
             return self._handle_razorpay_subscription_completed(payload)
         elif event_type == 'subscription.cancelled':
@@ -4196,34 +4185,7 @@ class PaymentService:
             logger.error(f"Error updating subscription plan: {str(e)}")
             raise
 
-    def get_subscription_by_gateway_id(self, gateway_subscription_id, provider):
-        """Get subscription by gateway ID (used by webhooks and upgrades)"""
-        try:
-            conn = self.db.get_connection()
-            cursor = conn.cursor(dictionary=True)
-            
-            if provider == 'razorpay':
-                id_column = 'razorpay_subscription_id'
-            elif provider == 'paypal':
-                id_column = 'paypal_subscription_id'
-            else:
-                raise ValueError(f"Unknown provider: {provider}")
-            
-            cursor.execute(f"""
-                SELECT * FROM {DB_TABLE_USER_SUBSCRIPTIONS}
-                WHERE {id_column} = %s
-            """, (gateway_subscription_id,))
-            
-            subscription = cursor.fetchone()
-            cursor.close()
-            conn.close()
-            
-            return subscription
-            
-        except Exception as e:
-            logger.error(f"Error getting subscription by gateway ID: {str(e)}")
-            return None
-
+   
     # ADDON PURCHASE FUNCTIONALITY
 
     def purchase_addon(self, user_id, app_id, addon_type, quantity, amount_paid, payment_id=None):
