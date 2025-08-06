@@ -899,10 +899,11 @@ class PaymentService:
         except Exception as e:
             logger.error(f"Error updating subscription status: {str(e)}")
             raise
-    
+        
     def _handle_razorpay_subscription_activated(self, payload):
-        """Handle subscription.activated webhook event"""
+        """Handle subscription.activated webhook event with invoice creation"""
         try:
+            # Extract subscription data
             subscription_data = self._extract_subscription_data(payload)
             razorpay_subscription_id = subscription_data.get('id')
             
@@ -912,6 +913,7 @@ class PaymentService:
                 logger.error("No subscription ID in activated webhook")
                 return {'status': 'error', 'message': 'Missing subscription ID'}
             
+            # Get subscription from database
             subscription = self._get_subscription_by_razorpay_id(razorpay_subscription_id)
             
             if not subscription:
@@ -924,16 +926,64 @@ class PaymentService:
             # Update subscription
             self._activate_subscription_with_period(razorpay_subscription_id, start_date, period_end, subscription_data)
             
-            
-            # Initialize resource quota separately
-            quota_result = self.initialize_resource_quota(subscription['user_id'], subscription['id'], subscription['app_id'])
+            # Initialize resource quota
+            quota_result = self.initialize_resource_quota(
+                subscription['user_id'], 
+                subscription['id'], 
+                subscription['app_id']
+            )
             
             if not quota_result:
                 logger.error(f"Failed to initialize resource quota for subscription {subscription['id']}")
+            
+            # AFTER resource initialization, extract payment data for invoice
+            payment_data = payload.get('payload', {}).get('payment', {}).get('entity', {})
+            payment_method = payment_data.get('method')  # 'card', 'upi', 'netbanking', etc.
+            payment_id = payment_data.get('id')
+            payment_amount = payment_data.get('amount', 0) / 100  # Convert paisa to rupees
+            payment_currency = payment_data.get('currency', 'INR')
+            
+            logger.info(f"Payment details: ID={payment_id}, Method={payment_method}, Amount={payment_amount}")
+            
+            # Create invoice for the initial payment
+            try:
+                # Create the invoice record
+                from .utils.helpers import generate_id
+                invoice_id = generate_id('inv_')
+                
+                conn = self.db.get_connection()
+                cursor = conn.cursor()
+                
+                cursor.execute("""
+                    INSERT INTO subscription_invoices
+                    (id, subscription_id, user_id, razorpay_payment_id, amount, currency,
+                    status, payment_method, invoice_date, paid_at, app_id)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, NOW(), NOW(), %s)
+                """, (
+                    invoice_id,
+                    subscription['id'],
+                    subscription['user_id'],
+                    payment_id,
+                    payment_amount,
+                    payment_currency,
+                    'paid',
+                    payment_method or 'unknown',
+                    subscription['app_id']
+                ))
+                
+                conn.commit()
+                cursor.close()
+                conn.close()
+                
+                logger.info(f"Created invoice {invoice_id} for subscription activation {razorpay_subscription_id}")
+                
+            except Exception as e:
+                logger.error(f"Error creating invoice for subscription activation: {str(e)}")
+                # Continue with other operations even if invoice creation fails
 
             return {
                 'status': 'success', 
-                'message': 'Subscription activated',
+                'message': 'Subscription activated with resources and invoice',
                 'period_start': start_date.isoformat(),
                 'period_end': period_end.isoformat()
             }
@@ -2738,14 +2788,36 @@ class PaymentService:
 
     
     def _get_subscription_payment_method(self, subscription):
-        """Detect payment method from database records"""
+        """Detect payment method from database records and metadata"""
         try:
             subscription_id = subscription['id']
             
+            # PRIMARY CHECK: Look for payment_method directly in metadata
+            metadata = subscription.get('metadata', {})
+            if isinstance(metadata, str):
+                try:
+                    metadata = json.loads(metadata)
+                except:
+                    metadata = {}
+                    
+            # The payment_method exists directly at the root level of metadata
+            if metadata and metadata.get('payment_method'):
+                payment_method = metadata.get('payment_method')
+                logger.info(f"[UPGRADE] Payment method found in metadata: {payment_method}")
+                
+                payment_method_lower = str(payment_method).lower()
+                if 'upi' in payment_method_lower:
+                    logger.info(f"[UPGRADE] UPI payment method detected from metadata")
+                    return 'upi'
+                elif 'card' in payment_method_lower:
+                    return 'card'
+                else:
+                    return 'other'
+            
+            # FALLBACK: Check subscription_invoices table (existing logic)
             conn = self.db.get_connection()
             cursor = conn.cursor(dictionary=True)
             
-            # Get most recent payment method from invoices
             cursor.execute("""
                 SELECT payment_method FROM subscription_invoices
                 WHERE subscription_id = %s AND payment_method IS NOT NULL
@@ -2758,17 +2830,17 @@ class PaymentService:
             
             if result and result['payment_method']:
                 payment_method = result['payment_method']
-                logger.info(f"[UPGRADE] Payment method from database: {payment_method}")
+                logger.info(f"[UPGRADE] Payment method from invoice database: {payment_method}")
                 
-                # Map to our categories
-                if payment_method in ['upi']:
+                payment_method_lower = str(payment_method).lower()
+                if 'upi' in payment_method_lower:
                     return 'upi'
-                elif payment_method in ['card']:
+                elif 'card' in payment_method_lower:
                     return 'card'
                 else:
-                    return 'other'  # netbanking, wallet, emi
+                    return 'other'
             
-            # Fallback: assume 'other' if not found
+            # No payment method found
             logger.warning(f"[UPGRADE] No payment method found for subscription {subscription_id}, defaulting to 'other'")
             return 'other'
             
