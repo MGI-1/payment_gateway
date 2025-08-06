@@ -217,7 +217,7 @@ class RazorpayProvider:
                 # Cancel the subscription
                 result = self.client.subscription.cancel(
                     subscription_id,
-                    {"cancel_at_cycle_end": 1 if cancel_at_cycle_end else 0}
+                    {"cancel_at_cycle_end": cancel_at_cycle_end}
                 )
                 
                 return {
