@@ -53,7 +53,7 @@ class PaymentService:
             return float(value)
         return float(value) if value is not None else 0.0
 
-    def create_subscription(self, user_id, plan_id, app_id):
+    def create_subscription(self, user_id, plan_id, app_id, preferred_gateway=None):
         """
         Create a subscription for a user.
         For free plans, just records it in the database.
@@ -81,7 +81,7 @@ class PaymentService:
             if plan['amount'] == 0:
                 return self._handle_free_subscription(user_id, plan_id, app_id, plan, existing_subscription)
             else:
-                return self._handle_paid_subscription(user_id, plan_id, app_id, plan, existing_subscription)
+                return self._handle_paid_subscription(user_id, plan_id, app_id, plan, existing_subscription, preferred_gateway)
                 
         except Exception as e:
             logger.error(f"Error creating subscription: {str(e)}")
@@ -272,7 +272,7 @@ class PaymentService:
             logger.error(f"Error creating free subscription: {str(e)}")
             raise
 
-    def _handle_paid_subscription(self, user_id, plan_id, app_id, plan, existing_subscription):
+    def _handle_paid_subscription(self, user_id, plan_id, app_id, plan, existing_subscription, preferred_gateway=None):
         """Handle paid subscription creation"""
         try:
             # Phase 1: Get user info (separate connection)
@@ -281,7 +281,7 @@ class PaymentService:
                 raise ValueError(f"User with ID {user_id} not found")
             
             # Phase 2: Create gateway subscription (outside database transaction)
-            gateway_response = self._create_gateway_subscription(plan, user, app_id)
+            gateway_response = self._create_gateway_subscription(plan, user, app_id, preferred_gateway)
             
             # Phase 3: Save to database (focused transaction)
             return self._save_paid_subscription(user_id, plan_id, app_id, gateway_response)
@@ -307,14 +307,24 @@ class PaymentService:
             logger.error(f"Error getting user info: {str(e)}")
             raise
 
-    def _create_gateway_subscription(self, plan, user, app_id):
+    def _create_gateway_subscription(self, plan, user, app_id, preferred_gateway=None):
         """Create subscription with payment gateway (no database operations)"""
         try:
             # Get payment gateways from plan
             payment_gateways = parse_json_field(plan.get('payment_gateways'), ['razorpay'])
             
-            # Determine which gateway to use (use first in list)
-            gateway = payment_gateways[0] if payment_gateways else 'razorpay'
+            # Determine which gateway to use
+            if preferred_gateway and (preferred_gateway in payment_gateways or plan.get('currency') != 'INR'):
+                # Use preferred gateway if provided and valid
+                gateway = preferred_gateway
+            else:
+                # Use first in list or default based on currency
+                if plan.get('currency') == 'INR':
+                    gateway = 'razorpay'  # Always use Razorpay for INR
+                else:  # USD
+                    gateway = payment_gateways[0] if payment_gateways else 'paypal'
+            
+            logger.info(f"Using payment gateway: {gateway} for subscription")
             
             if gateway == 'razorpay':
                 gateway_plan_id = plan.get('razorpay_plan_id') or plan['id']
@@ -940,10 +950,11 @@ class PaymentService:
             payment_data = payload.get('payload', {}).get('payment', {}).get('entity', {})
             payment_method = payment_data.get('method')  # 'card', 'upi', 'netbanking', etc.
             payment_id = payment_data.get('id')
+            razorpay_invoice_id = payment_data.get('invoice_id')  # Extract Razorpay invoice ID
             payment_amount = payment_data.get('amount', 0) / 100  # Convert paisa to rupees
             payment_currency = payment_data.get('currency', 'INR')
             
-            logger.info(f"Payment details: ID={payment_id}, Method={payment_method}, Amount={payment_amount}")
+            logger.info(f"Payment details: ID={payment_id}, Invoice ID={razorpay_invoice_id}, Method={payment_method}, Amount={payment_amount}")
             
             # Create invoice for the initial payment
             try:
@@ -956,14 +967,15 @@ class PaymentService:
                 
                 cursor.execute("""
                     INSERT INTO subscription_invoices
-                    (id, subscription_id, user_id, razorpay_payment_id, amount, currency,
+                    (id, subscription_id, user_id, razorpay_payment_id, razorpay_invoice_id, amount, currency,
                     status, payment_method, invoice_date, paid_at, app_id)
-                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, NOW(), NOW(), %s)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, NOW(), NOW(), %s)
                 """, (
                     invoice_id,
                     subscription['id'],
                     subscription['user_id'],
                     payment_id,
+                    razorpay_invoice_id,  # Add Razorpay invoice ID to the insert
                     payment_amount,
                     payment_currency,
                     'paid',
@@ -975,7 +987,7 @@ class PaymentService:
                 cursor.close()
                 conn.close()
                 
-                logger.info(f"Created invoice {invoice_id} for subscription activation {razorpay_subscription_id}")
+                logger.info(f"Created invoice {invoice_id} for subscription activation {razorpay_subscription_id}, Razorpay Invoice ID: {razorpay_invoice_id}")
                 
             except Exception as e:
                 logger.error(f"Error creating invoice for subscription activation: {str(e)}")
@@ -3108,6 +3120,7 @@ class PaymentService:
             if response.get('error'):
                 raise ValueError(response.get('message', 'Failed to create subscription'))
             
+            response['gateway'] = 'razorpay'
             return self._save_paid_subscription(user_id, plan_id, app_id, response)
             
         except Exception as e:
@@ -3146,6 +3159,7 @@ class PaymentService:
             if response.get('error'):
                 raise ValueError(response.get('message', 'Failed to create subscription'))
             
+            response['gateway'] = 'razorpay'
             return self._save_paid_subscription(user_id, plan_id, app_id, response)
             
         except Exception as e:
@@ -3917,6 +3931,7 @@ class PaymentService:
             if response.get('error'):
                 raise ValueError(response.get('message', 'Failed to create subscription'))
             
+            response['gateway'] = 'razorpay'
             return self._save_paid_subscription(user_id, plan_id, app_id, response)
             
         except Exception as e:
