@@ -88,7 +88,7 @@ class RazorpayProvider:
             
             logger.info(f"[RAZORPAY DEBUG] Full subscription_data: {subscription_data}")    
             logger.info(f"Creating Razorpay subscription for user {user_id} with plan {plan_id}")
-            razorpay_subscription = self.client.subscription.create(subscription_data, timeout=30)
+            razorpay_subscription = self.client.subscription.create(subscription_data, timeout=60)
             
             return {
                 'id': razorpay_subscription.get('id'),
@@ -137,7 +137,7 @@ class RazorpayProvider:
                 subscription_data['offer_id'] = f'offer_{discount_offer_pct}pct'
             
             logger.info(f"Creating Razorpay subscription with {discount_offer_pct}% discount")
-            razorpay_subscription = self.client.subscription.create(subscription_data, timeout=30)
+            razorpay_subscription = self.client.subscription.create(subscription_data, timeout=60)
             
             return {
                 'id': razorpay_subscription.get('id'),
@@ -174,7 +174,7 @@ class RazorpayProvider:
                 'callback_method': 'get'
             }
             
-            payment_link = self.client.payment_link.create(payment_link_data, timeout=30)
+            payment_link = self.client.payment_link.create(payment_link_data, timeout=60)
             
             return {
                 'success': True,
@@ -218,7 +218,7 @@ class RazorpayProvider:
                 result = self.client.subscription.cancel(
                     subscription_id,
                     {"cancel_at_cycle_end": cancel_at_cycle_end},
-                    timeout=30
+                    timeout=60
                 )
                 
                 return {
@@ -267,7 +267,7 @@ class RazorpayProvider:
             }
             
             logger.info(f"Creating Razorpay subscription with specific offer: {offer_id}")
-            razorpay_subscription = self.client.subscription.create(subscription_data, timeout=30)
+            razorpay_subscription = self.client.subscription.create(subscription_data, timeout=60)
             
             return {
                 'id': razorpay_subscription.get('id'),
@@ -305,7 +305,7 @@ class RazorpayProvider:
             logger.info(f"Fetching Razorpay subscription: {subscription_id}")
             
             # Fetch the subscription
-            subscription = self.client.subscription.fetch(subscription_id, timeout=30)
+            subscription = self.client.subscription.fetch(subscription_id, timeout=60)
             
             return {
                 'success': True,
