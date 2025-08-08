@@ -226,18 +226,20 @@ def init_payment_routes(app, payment_service):
             user_id = request.args.get('user_id')
             app_id = request.args.get('app_id', 'marketfit')
             
-            logger.info(f"[AZURE DEBUG] resource-quota params: user_id={user_id}, app_id={app_id}")
+            logger.info(f"[DEBUG] Resource quota request for user_id={user_id}, app_id={app_id}")
             
             if not user_id:
-                logger.warning("[AZURE DEBUG] Missing user_id parameter")
+                logger.warning("[DEBUG] Missing user_id parameter")
                 return jsonify({'error': 'User ID is required'}), 400
                 
             quota = payment_service.get_resource_quota(user_id, app_id)
             
+            logger.info(f"[DEBUG] Resource quota response: {quota}")
+            
             return jsonify({'quota': quota})
             
         except Exception as e:
-            logger.error(f"[AZURE DEBUG] Error in resource-quota endpoint: {str(e)}")
+            logger.error(f"[DEBUG] Error in resource-quota endpoint: {str(e)}")
             logger.error(traceback.format_exc())
             return jsonify({'error': str(e)}), 500
 
