@@ -53,11 +53,20 @@ def init_payment_routes(app, payment_service):
             user_id = data.get('user_id')
             plan_id = data.get('plan_id')
             app_id = data.get('app_id', 'marketfit')
+            redirect_url = data.get('redirect_url')  # Get the redirect URL from the request
             
             if not user_id or not plan_id:
                 return jsonify({'error': 'User ID and Plan ID are required'}), 400
                 
-            subscription = payment_service.create_subscription(user_id, plan_id, app_id, preferred_gateway='razorpay')
+            # Pass the redirect URL to the payment service
+            subscription = payment_service.create_subscription(
+                user_id, 
+                plan_id, 
+                app_id, 
+                preferred_gateway='razorpay',
+                redirect_url=redirect_url  # Pass the redirect URL
+            )
+            
             return jsonify({'subscription': subscription})
         except Exception as e:
             logger.error(f"Error creating subscription: {str(e)}")

@@ -53,7 +53,7 @@ class PaymentService:
             return float(value)
         return float(value) if value is not None else 0.0
 
-    def create_subscription(self, user_id, plan_id, app_id, preferred_gateway=None):
+    def create_subscription(self, user_id, plan_id, app_id, preferred_gateway=None, redirect_url=None):
         """
         Create a subscription for a user.
         For free plans, just records it in the database.
@@ -63,6 +63,8 @@ class PaymentService:
             user_id: The user's ID
             plan_id: The plan ID
             app_id: The application ID
+            preferred_gateway: Preferred payment gateway
+            redirect_url: URL to redirect after payment
             
         Returns:
             dict: Subscription details
@@ -81,7 +83,15 @@ class PaymentService:
             if plan['amount'] == 0:
                 return self._handle_free_subscription(user_id, plan_id, app_id, plan, existing_subscription)
             else:
-                return self._handle_paid_subscription(user_id, plan_id, app_id, plan, existing_subscription, preferred_gateway)
+                return self._handle_paid_subscription(
+                    user_id, 
+                    plan_id, 
+                    app_id, 
+                    plan, 
+                    existing_subscription, 
+                    preferred_gateway,
+                    redirect_url
+                )
                 
         except Exception as e:
             logger.error(f"Error creating subscription: {str(e)}")
@@ -272,7 +282,7 @@ class PaymentService:
             logger.error(f"Error creating free subscription: {str(e)}")
             raise
 
-    def _handle_paid_subscription(self, user_id, plan_id, app_id, plan, existing_subscription, preferred_gateway=None):
+    def _handle_paid_subscription(self, user_id, plan_id, app_id, plan, existing_subscription, preferred_gateway=None, redirect_url=None):
         """Handle paid subscription creation"""
         try:
             # Phase 1: Get user info (separate connection)
@@ -281,7 +291,13 @@ class PaymentService:
                 raise ValueError(f"User with ID {user_id} not found")
             
             # Phase 2: Create gateway subscription (outside database transaction)
-            gateway_response = self._create_gateway_subscription(plan, user, app_id, preferred_gateway)
+            gateway_response = self._create_gateway_subscription(
+                plan, 
+                user, 
+                app_id, 
+                preferred_gateway,
+                redirect_url
+            )
             
             # Phase 3: Save to database (focused transaction)
             return self._save_paid_subscription(user_id, plan_id, app_id, gateway_response)
@@ -307,7 +323,7 @@ class PaymentService:
             logger.error(f"Error getting user info: {str(e)}")
             raise
 
-    def _create_gateway_subscription(self, plan, user, app_id, preferred_gateway=None):
+    def _create_gateway_subscription(self, plan, user, app_id, preferred_gateway=None, redirect_url=None):
         """Create subscription with payment gateway (no database operations)"""
         try:
             # Get payment gateways from plan
@@ -338,11 +354,19 @@ class PaymentService:
                 logger.info(f"[SERVICE DEBUG] customer_info being passed: {customer_info}")
                 logger.info(f"[SERVICE DEBUG] customer_info types: {[(k, type(v)) for k, v in customer_info.items()]}")
                 
+                # Add additional notes with redirect URL
+                additional_notes = {}
+                if redirect_url:
+                    additional_notes['redirect_url'] = redirect_url
+                
                 response = self.razorpay.create_subscription(
                     gateway_plan_id,
                     customer_info,
-                    app_id
-                )    
+                    app_id,
+                    additional_notes=additional_notes,
+                    redirect_url=redirect_url  # Pass the redirect URL
+                )
+                    
                 if response.get('error'):
                     raise ValueError(response.get('message', 'Failed to create Razorpay subscription'))
                 
