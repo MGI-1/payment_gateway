@@ -1940,37 +1940,29 @@ class PaymentService:
            raise
 
     def get_resource_quota(self, user_id, app_id):
-        """Get remaining resource quota for a user in the current billing period."""
-        
-        try:
-            # Initialize quota object based on app
-            quota = self._initialize_quota_object(app_id)
-            logger.info(f"[DEBUG] Initial quota object: {quota}")
-            
-            # Get active subscription
-            subscription_id = self._get_active_subscription_id(user_id, app_id)
-            logger.info(f"[DEBUG] Active subscription ID: {subscription_id}")
-            
-            if not subscription_id:
-                logger.warning(f"[DEBUG] No active subscription found for user {user_id}")
-                return quota
-            
-            # Get quota record
-            quota_result = self._get_quota_record(user_id, subscription_id, app_id)
-            logger.info(f"[DEBUG] Quota record from DB: {quota_result}")
-            
-            if quota_result:
-                quota = self._update_quota_from_record(app_id, quota, quota_result)
-                logger.info(f"[DEBUG] Updated quota after record processing: {quota}")
-            else:
-                logger.warning(f"[DEBUG] No quota record found for subscription {subscription_id}")
-            
-            return quota
-            
-        except Exception as e:
-            logger.error(f"[DEBUG] Error in get_resource_quota: {str(e)}")
-            logger.error(traceback.format_exc())
-            return self._initialize_quota_object(app_id)
+       """Get remaining resource quota for a user in the current billing period."""
+       
+       try:
+           # Initialize quota object based on app
+           quota = self._initialize_quota_object(app_id)
+           
+           # Get active subscription
+           subscription_id = self._get_active_subscription_id(user_id, app_id)
+           if not subscription_id:
+               logger.warning(f"[AZURE DEBUG] No active subscription found for user {user_id}")
+               return quota
+           
+           # Get quota record
+           quota_result = self._get_quota_record(user_id, subscription_id, app_id)
+           if quota_result:
+               quota = self._update_quota_from_record(app_id, quota, quota_result)
+           
+           return quota
+           
+       except Exception as e:
+           logger.error(f"[AZURE DEBUG] Error in get_resource_quota: {str(e)}")
+           logger.error(traceback.format_exc())
+           return self._initialize_quota_object(app_id)
 
     def _initialize_quota_object(self, app_id):
        """Initialize quota object based on app"""
@@ -1985,90 +1977,60 @@ class PaymentService:
            }
 
     def _get_active_subscription_id(self, user_id, app_id):
-        """Get active subscription ID with isolated connection"""
-        try:
-            conn = self.db.get_connection()
-            cursor = conn.cursor(dictionary=True)
-            
-            query = f"""
-                SELECT id FROM {DB_TABLE_USER_SUBSCRIPTIONS}
-                WHERE user_id = %s AND app_id = %s AND status = 'active'
-                ORDER BY current_period_end DESC LIMIT 1
-            """
-            
-            logger.info(f"[DEBUG] Active subscription query: {query} with params: {user_id}, {app_id}")
-            
-            cursor.execute(query, (user_id, app_id))
-            
-            subscription_result = cursor.fetchone()
-            logger.info(f"[DEBUG] Active subscription result: {subscription_result}")
-            
-            cursor.close()
-            conn.close()
-            
-            return subscription_result['id'] if subscription_result else None
-            
-        except Exception as e:
-            logger.error(f"[DEBUG] Error getting active subscription ID: {str(e)}")
-            return None
+       """Get active subscription ID with isolated connection"""
+       try:
+           conn = self.db.get_connection()
+           cursor = conn.cursor(dictionary=True)
+           
+           cursor.execute(f"""
+               SELECT id FROM {DB_TABLE_USER_SUBSCRIPTIONS}
+               WHERE user_id = %s AND app_id = %s AND status = 'active'
+               ORDER BY current_period_end DESC LIMIT 1
+           """, (user_id, app_id))
+           
+           subscription_result = cursor.fetchone()
+           
+           cursor.close()
+           conn.close()
+           
+           return subscription_result['id'] if subscription_result else None
+           
+       except Exception as e:
+           logger.error(f"Error getting active subscription ID: {str(e)}")
+           return None
 
     def _get_quota_record(self, user_id, subscription_id, app_id):
-        """Get quota record with isolated connection"""
-        try:
-            conn = self.db.get_connection()
-            cursor = conn.cursor(dictionary=True)
-            
-            query = f"""
-                SELECT * FROM {DB_TABLE_RESOURCE_USAGE}
-                WHERE user_id = %s AND subscription_id = %s AND app_id = %s
-                ORDER BY created_at DESC LIMIT 1
-            """
-            
-            logger.info(f"[DEBUG] Quota record query: {query} with params: {user_id}, {subscription_id}, {app_id}")
-            
-            cursor.execute(query, (user_id, subscription_id, app_id))
-            
-            quota_result = cursor.fetchone()
-            
-            # Log specific fields we're interested in
-            if quota_result:
-                logger.info(f"[DEBUG] Quota record found - ID: {quota_result.get('id')}")
-                logger.info(f"[DEBUG] document_pages_quota: {quota_result.get('document_pages_quota')}")
-                logger.info(f"[DEBUG] perplexity_requests_quota: {quota_result.get('perplexity_requests_quota')}")
-                logger.info(f"[DEBUG] original_document_pages_quota: {quota_result.get('original_document_pages_quota')}")
-            else:
-                logger.warning(f"[DEBUG] No quota record found for query")
-            
-            cursor.close()
-            conn.close()
-            
-            return quota_result
-            
-        except Exception as e:
-            logger.error(f"[DEBUG] Error getting quota record: {str(e)}")
-            return None
+       """Get quota record with isolated connection"""
+       try:
+           conn = self.db.get_connection()
+           cursor = conn.cursor(dictionary=True)
+           
+           cursor.execute(f"""
+               SELECT * FROM {DB_TABLE_RESOURCE_USAGE}
+               WHERE user_id = %s AND subscription_id = %s AND app_id = %s
+               ORDER BY created_at DESC LIMIT 1
+           """, (user_id, subscription_id, app_id))
+           
+           quota_result = cursor.fetchone()
+           
+           cursor.close()
+           conn.close()
+           
+           return quota_result
+           
+       except Exception as e:
+           logger.error(f"Error getting quota record: {str(e)}")
+           return None
 
     def _update_quota_from_record(self, app_id, quota, quota_result):
-        """Update quota object from database record"""
-        logger.info(f"[DEBUG] Updating quota from record. App: {app_id}")
-        logger.info(f"[DEBUG] Before update - quota: {quota}")
-        
-        if app_id == 'marketfit':
-            document_pages_quota = quota_result.get('document_pages_quota')
-            perplexity_requests_quota = quota_result.get('perplexity_requests_quota')
-            
-            logger.info(f"[DEBUG] Setting document_pages to {document_pages_quota}")
-            logger.info(f"[DEBUG] Setting perplexity_requests to {perplexity_requests_quota}")
-            
-            quota['document_pages'] = document_pages_quota
-            quota['perplexity_requests'] = perplexity_requests_quota
-        else:  # saleswit
-            requests_quota = quota_result.get('requests_quota')
-            logger.info(f"[DEBUG] Setting requests to {requests_quota}")
-            quota['requests'] = requests_quota
-        
-        logger.info(f"[DEBUG] After update - final quota object: {quota}")
-        return quota
+       """Update quota object from database record"""
+       if app_id == 'marketfit':
+           quota['document_pages'] = quota_result['document_pages_quota']
+           quota['perplexity_requests'] = quota_result['perplexity_requests_quota']
+       else:  # saleswit
+           quota['requests'] = quota_result['requests_quota']
+       
+       return quota
 
     def check_resource_availability(self, user_id, app_id, resource_type, count=1):
         """Check if a user has enough resources for an action"""
