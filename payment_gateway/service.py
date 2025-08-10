@@ -680,64 +680,6 @@ class PaymentService:
             logger.error(traceback.format_exc())
             return []
     
-    def handle_webhook(self, payload, provider='razorpay'):
-        """
-        Handle webhook events for subscription updates
-        
-        Args:
-            payload: The webhook payload
-            provider: The payment provider
-            
-        Returns:
-            dict: Processing result
-        """
-        try:
-            event_type = payload.get('event')
-            
-            if not event_type:
-                logger.error("Invalid webhook payload - no event type")
-                return {'status': 'error', 'message': 'Invalid webhook payload'}
-            
-            
-            # Extract entity and user IDs
-            entity_id, user_id = self._extract_webhook_ids(payload, provider)
-            
-            # Log the webhook event
-            self.db.log_event(
-                event_type,
-                entity_id,
-                user_id,
-                payload,
-                provider=provider,
-                processed=False
-            )
-            
-            # Route to the appropriate handler based on the event type
-            if provider == 'razorpay':
-                result = self._handle_razorpay_webhook(event_type, payload)
-            elif provider == 'paypal':
-                result = {'status': 'ignored', 'message': 'PayPal webhook handling not implemented'}
-            else:
-                logger.error(f"Unknown provider: {provider}")
-                result = {'status': 'error', 'message': f'Unknown provider: {provider}'}
-            
-            # Update the event log to mark as processed
-            self.db.log_event(
-                f"{event_type}_processed",
-                entity_id,
-                user_id,
-                result,
-                provider=provider,
-                processed=True
-            )
-            
-            return {'status': 'success', 'message': f'Processed {event_type} event', 'result': result}
-                
-        except Exception as e:
-            logger.error(f"Error handling webhook: {str(e)}")
-            logger.error(traceback.format_exc())
-            return {'status': 'error', 'message': str(e)}
-
     def _extract_webhook_ids(self, payload, provider):
         """Extract entity ID and user ID from webhook payload"""
         entity_id = None
@@ -909,7 +851,7 @@ class PaymentService:
         except Exception as e:
             logger.error(f"Error updating subscription status: {str(e)}")
             raise
-        
+            
     def _handle_razorpay_subscription_activated(self, payload):
         """Handle subscription.activated webhook event with invoice creation"""
         try:
@@ -958,37 +900,48 @@ class PaymentService:
             
             # Create invoice for the initial payment
             try:
-                # Create the invoice record
-                from .utils.helpers import generate_id
-                invoice_id = generate_id('inv_')
-                
                 conn = self.db.get_connection()
                 cursor = conn.cursor()
                 
+                # Check if invoice already exists with this payment ID
                 cursor.execute("""
-                    INSERT INTO subscription_invoices
-                    (id, subscription_id, user_id, razorpay_payment_id, razorpay_invoice_id, amount, currency,
-                    status, payment_method, invoice_date, paid_at, app_id)
-                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, NOW(), NOW(), %s)
-                """, (
-                    invoice_id,
-                    subscription['id'],
-                    subscription['user_id'],
-                    payment_id,
-                    razorpay_invoice_id,  # Add Razorpay invoice ID to the insert
-                    payment_amount,
-                    payment_currency,
-                    'paid',
-                    payment_method or 'unknown',
-                    subscription['app_id']
-                ))
+                    SELECT id FROM subscription_invoices 
+                    WHERE razorpay_payment_id = %s OR razorpay_invoice_id = %s
+                """, (payment_id, razorpay_invoice_id))
                 
-                conn.commit()
+                existing_invoice = cursor.fetchone()
+                
+                if not existing_invoice:
+                    # Create the invoice record
+                    from .utils.helpers import generate_id
+                    invoice_id = generate_id('inv_')
+                    
+                    cursor.execute("""
+                        INSERT INTO subscription_invoices
+                        (id, subscription_id, user_id, razorpay_payment_id, razorpay_invoice_id, amount, currency,
+                        status, payment_method, invoice_date, paid_at, app_id)
+                        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, NOW(), NOW(), %s)
+                    """, (
+                        invoice_id,
+                        subscription['id'],
+                        subscription['user_id'],
+                        payment_id,
+                        razorpay_invoice_id,
+                        payment_amount,
+                        payment_currency,
+                        'paid',
+                        payment_method or 'unknown',
+                        subscription['app_id']
+                    ))
+                    
+                    conn.commit()
+                    logger.info(f"Created invoice {invoice_id} for subscription activation {razorpay_subscription_id}, Razorpay Invoice ID: {razorpay_invoice_id}")
+                else:
+                    logger.info(f"Invoice already exists for payment {payment_id}, skipping creation")
+                
                 cursor.close()
                 conn.close()
-                
-                logger.info(f"Created invoice {invoice_id} for subscription activation {razorpay_subscription_id}, Razorpay Invoice ID: {razorpay_invoice_id}")
-                
+                    
             except Exception as e:
                 logger.error(f"Error creating invoice for subscription activation: {str(e)}")
                 # Continue with other operations even if invoice creation fails
@@ -1081,9 +1034,9 @@ class PaymentService:
        except Exception as e:
            logger.error(f"Error activating subscription with period: {str(e)}")
            raise
-   
+    
     def _handle_razorpay_subscription_charged(self, subscription_data, payment_data):
-        """Handle subscription charged event with plan change and payment method detection"""
+        """Handle subscription.charged webhook event with plan change and payment method detection"""
         try:
             razorpay_sub_id = subscription_data.get('id')
             webhook_plan_id = subscription_data.get('plan_id')  # Plan ID from webhook
@@ -1107,8 +1060,36 @@ class PaymentService:
             
             database_plan_id = subscription['plan_id']
             
+            # Check if this is a fresh subscription (recent activation) to prevent duplicates
+            cursor.execute("""
+                SELECT updated_at FROM user_subscriptions
+                WHERE id = %s AND updated_at > DATE_SUB(NOW(), INTERVAL 5 MINUTE)
+            """, (subscription['id'],))
+            
+            recent_subscription_update = cursor.fetchone()
+            is_fresh_subscription = recent_subscription_update is not None
+            
+            if is_fresh_subscription:
+                logger.info("Skipping subscription.charged processing - fresh subscription already handled by activation webhook")
+                cursor.close()
+                conn.close()
+                return {
+                    'success': True,
+                    'subscription_id': subscription['id'],
+                    'message': 'Fresh subscription - processed by activation webhook',
+                    'skipped': True
+                }
+            
+            # This is a renewal - proceed with full processing
+            logger.info(f"Processing renewal/update for subscription: {subscription['id']}")
+            
+            # Flags to prevent duplicate execution
+            plan_changed = False
+            resource_quota_handled = False
+            
             # DETECT PLAN CHANGE (Manual Downgrade/Upgrade)
             if webhook_plan_id and webhook_plan_id != database_plan_id:
+                plan_changed = True
                 logger.info(f"Plan change detected: {database_plan_id} → {webhook_plan_id}")
                 
                 # Get new plan details
@@ -1129,22 +1110,11 @@ class PaymentService:
                         new_plan,
                         subscription['app_id']
                     )
-                    
-                    self._log_subscription_event(
-                        subscription['user_id'],
-                        subscription['id'],
-                        'payment_method_changed',
-                        {
-                            'old_method': last_payment_method,
-                            'new_method': current_payment_method,
-                            'change_detected_in': 'subscription_charged_webhook'
-                        },
-                        'razorpay'  # Add provider
-                    )
+                    resource_quota_handled = True
                     
                     logger.info(f"Plan change synced: User {subscription['user_id']} moved to {new_plan['name']}")
             
-            # DETECT PAYMENT METHOD CHANGE
+            # DETECT PAYMENT METHOD CHANGE (only once)
             current_payment_method = payment_data.get('method')  # From current payment
             
             if current_payment_method:
@@ -1174,44 +1144,92 @@ class PaymentService:
                         }
                     )
             
-            # Create invoice record for this payment
-            invoice_id = generate_id('inv_')
+            # Extract payment data
             payment_id = payment_data.get('id')
+            razorpay_invoice_id = payment_data.get('invoice_id')  # Extract Razorpay invoice ID
             amount = payment_data.get('amount', 0) / 100  # Convert paisa to rupees
             currency = payment_data.get('currency', 'INR')
             
+            # Check if invoice already exists with this payment ID
             cursor.execute("""
-                INSERT INTO subscription_invoices 
-                (id, subscription_id, user_id, razorpay_payment_id, amount, currency, 
-                status, payment_method, invoice_date, app_id)
-                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, NOW(), %s)
-            """, (
-                invoice_id,
-                subscription['id'],
-                subscription['user_id'],
-                payment_id,
-                amount,
-                currency,
-                'paid',
-                current_payment_method or 'unknown',
-                subscription['app_id']
-            ))
+                SELECT id FROM subscription_invoices 
+                WHERE razorpay_payment_id = %s OR razorpay_invoice_id = %s
+            """, (payment_id, razorpay_invoice_id))
             
-            # Reset resource quota for the new billing period
-            self.initialize_resource_quota(
-                subscription['user_id'], 
-                subscription['id'], 
-                subscription['app_id']
-            )
+            existing_invoice = cursor.fetchone()
             
-            # Update subscription billing dates
+            if not existing_invoice:
+                # Create invoice record for this payment only if it doesn't exist
+                invoice_id = generate_id('inv_')
+                
+                cursor.execute("""
+                    INSERT INTO subscription_invoices 
+                    (id, subscription_id, user_id, razorpay_payment_id, razorpay_invoice_id, amount, currency, 
+                    status, payment_method, invoice_date, app_id)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, NOW(), %s)
+                """, (
+                    invoice_id,
+                    subscription['id'],
+                    subscription['user_id'],
+                    payment_id,
+                    razorpay_invoice_id,  # Now storing Razorpay invoice ID
+                    amount,
+                    currency,
+                    'paid',
+                    current_payment_method or 'unknown',
+                    subscription['app_id']
+                ))
+                
+                logger.info(f"Created invoice {invoice_id} for subscription charged {razorpay_sub_id}")
+            else:
+                logger.info(f"Invoice already exists for payment {payment_id}, skipping creation")
+                invoice_id = existing_invoice['id']
+            
+            # Reset resource quota for the new billing period (only if not already handled by plan change)
+            if not resource_quota_handled:
+                self.initialize_resource_quota(
+                    subscription['user_id'], 
+                    subscription['id'], 
+                    subscription['app_id']
+                )
+            
+            # Get plan details for proper interval calculation
+            cursor.execute(f"""
+                SELECT `interval`, interval_count
+                FROM {DB_TABLE_SUBSCRIPTION_PLANS}
+                WHERE id = %s
+            """, (subscription['plan_id'],))
+            
+            plan_details = cursor.fetchone()
+            
+            if plan_details:
+                interval = plan_details['interval']
+                interval_count = plan_details['interval_count']
+                
+                # Calculate proper interval for SQL
+                if interval == 'month':
+                    sql_interval = f"INTERVAL {interval_count} MONTH"
+                elif interval == 'year':
+                    sql_interval = f"INTERVAL {interval_count} YEAR"
+                else:
+                    # Fallback to monthly
+                    sql_interval = "INTERVAL 1 MONTH"
+                    logger.warning(f"Unknown interval '{interval}' for subscription {subscription['id']}, defaulting to monthly")
+            else:
+                # Fallback if plan not found
+                sql_interval = "INTERVAL 1 MONTH"
+                logger.warning(f"Plan details not found for subscription {subscription['id']}, defaulting to monthly")
+            
+            # Update subscription billing dates for renewal with proper interval
             cursor.execute(f"""
                 UPDATE {DB_TABLE_USER_SUBSCRIPTIONS}
                 SET current_period_start = NOW(),
-                    current_period_end = DATE_ADD(NOW(), INTERVAL 1 WEEK),
+                    current_period_end = DATE_ADD(NOW(), {sql_interval}),
                     status = 'active'
                 WHERE id = %s
             """, (subscription['id'],))
+            
+            logger.info(f"Updated billing period for renewal with {sql_interval}")
             
             conn.commit()
             cursor.close()
@@ -1271,6 +1289,20 @@ class PaymentService:
             # Get new plan features
             new_features = json.loads(new_plan.get('features', '{}'))
             
+            # Calculate proper billing period end based on new plan
+            interval = new_plan.get('interval', 'month')
+            interval_count = new_plan.get('interval_count', 1)
+            
+            # Calculate proper interval for SQL
+            if interval == 'month':
+                sql_interval = f"INTERVAL {interval_count} MONTH"
+            elif interval == 'year':
+                sql_interval = f"INTERVAL {interval_count} YEAR"
+            else:
+                # Fallback to monthly
+                sql_interval = "INTERVAL 1 MONTH"
+                logger.warning(f"Unknown interval '{interval}' for plan {new_plan.get('id')}, defaulting to monthly")
+            
             # Update resource quota to new plan limits
             conn = self.db.get_connection()
             cursor = conn.cursor()
@@ -1288,7 +1320,7 @@ class PaymentService:
                     INSERT INTO {DB_TABLE_RESOURCE_USAGE}
                     (id, user_id, subscription_id, app_id, resource_type, quota_limit, 
                     current_usage, billing_period_start, billing_period_end)
-                    VALUES (%s, %s, %s, %s, %s, %s, %s, NOW(), DATE_ADD(NOW(), INTERVAL 1 WEEK))
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, NOW(), DATE_ADD(NOW(), {sql_interval}))
                 """, (
                     quota_id,
                     user_id,
@@ -1303,7 +1335,7 @@ class PaymentService:
             cursor.close()
             conn.close()
             
-            logger.info(f"Resource quota reset for plan change: {user_id} → {new_plan['name']}")
+            logger.info(f"Resource quota reset for plan change: {user_id} → {new_plan['name']} with {sql_interval}")
             logger.info(f"New quota limits: {new_features}")
             
         except Exception as e:
@@ -1389,63 +1421,6 @@ class PaymentService:
        
        return subscription_data
 
-    def _renew_subscription_with_invoice(self, razorpay_subscription_id, new_start, new_end, subscription_data, subscription, razorpay_invoice_id, razorpay_payment_id, payment_data):
-        """Renew subscription and record invoice in transaction"""
-        try:
-            conn = self.db.get_connection()
-            cursor = conn.cursor(dictionary=True)
-            
-            try:
-                # Update subscription status
-                cursor.execute(f"""
-                    UPDATE {DB_TABLE_USER_SUBSCRIPTIONS}
-                    SET status = 'active',
-                        current_period_start = %s,
-                        current_period_end = %s,
-                        updated_at = NOW(),
-                        metadata = JSON_MERGE_PATCH(IFNULL(metadata, '{{}}'), %s)
-                    WHERE razorpay_subscription_id = %s
-                """, (new_start, new_end, json.dumps({
-                    'subscription': subscription_data
-                }), razorpay_subscription_id))
-                
-                # If we have invoice details, record the invoice WITH payment method
-                if razorpay_invoice_id:
-                    invoice_id = generate_id('inv_')
-                    
-                    # Get invoice amount and payment method
-                    amount = payment_data.get('amount', 0)
-                    currency = payment_data.get('currency', 'INR')
-                    status = payment_data.get('status', 'pending')
-                    payment_method = payment_data.get('method')  # ← NEW: Extract payment method
-                    
-                    if status == 'captured':
-                        status = 'Paid'
-                    
-                    # Insert invoice record with payment method
-                    cursor.execute(f"""
-                        INSERT INTO subscription_invoices
-                        (id, subscription_id, user_id, razorpay_invoice_id, 
-                        amount, currency, payment_method, status, payment_id, invoice_date, app_id)
-                        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, NOW(), %s)
-                    """, (invoice_id, subscription['id'], subscription['user_id'], 
-                        razorpay_invoice_id, amount, currency, payment_method, status,  # ← NEW: Include payment_method
-                        razorpay_payment_id, subscription['app_id']))
-                
-                conn.commit()
-                cursor.close()
-                conn.close()
-                
-            except Exception as e:
-                conn.rollback()
-                cursor.close()
-                conn.close()
-                raise
-                
-        except Exception as e:
-            logger.error(f"Error renewing subscription with invoice: {str(e)}")
-            raise
-   
     def _handle_razorpay_subscription_completed(self, payload):
        """Handle subscription.completed webhook event"""
        try:
@@ -1683,75 +1658,85 @@ class PaymentService:
            return {'status': 'error', 'message': str(e)}
 
     def _activate_subscription_transaction(self, subscription, plan, payment_id):
-       """Activate subscription in transaction"""
-       try:
-           conn = self.db.get_connection()
-           cursor = conn.cursor(dictionary=True)
-           
-           
-           
-           try:
-               # Calculate subscription period
-               start_date = datetime.now()
-               period_end = calculate_period_end(start_date, plan['interval'], plan['interval_count'])
-               
-               # Update subscription status
-               cursor.execute(f"""
-                   UPDATE {DB_TABLE_USER_SUBSCRIPTIONS}
-                   SET status = 'active', 
-                       current_period_start = %s,
-                       current_period_end = %s,
-                       updated_at = NOW()
-                   WHERE razorpay_subscription_id = %s
-               """, (start_date, period_end, subscription['razorpay_subscription_id']))
-               
-               # Record payment if provided
-               if payment_id:
-                   invoice_id = generate_id('inv_')
-                   
-                   cursor.execute("""
-                       INSERT INTO subscription_invoices
-                       (id, subscription_id, user_id, razorpay_invoice_id, amount, status, payment_id, app_id, invoice_date, paid_at)
-                       VALUES (%s, %s, %s, %s, %s, %s, %s, %s, NOW(), NOW())
-                   """, (
-                       invoice_id, 
-                       subscription['id'],
-                       subscription['user_id'],
-                       'manual_activation',
-                       plan['amount'],
-                       'paid',
-                       payment_id,
-                       subscription['app_id']
-                   ))
-               
-               # Log the manual activation
-               self.db.log_event(
-                   'manual_activation',
-                   subscription['razorpay_subscription_id'],
-                   subscription['user_id'],
-                   {'payment_id': payment_id},
-                   provider='razorpay',
-                   processed=True
-               )
-               
-               conn.commit()
-               cursor.close()
-               conn.close()
-               
-               logger.info(f"Subscription {subscription['razorpay_subscription_id']} manually activated")
-               return {'status': 'success', 'message': 'Subscription activated'}
-               
-           except Exception as e:
-               conn.rollback()
-               cursor.close()
-               conn.close()
-               raise
-               
-       except Exception as e:
-           logger.error(f"Error in activation transaction: {str(e)}")
-           raise
-       
-   # service.py - Updated resource tracking mechanism
+        """Activate subscription in transaction"""
+        try:
+            conn = self.db.get_connection()
+            cursor = conn.cursor(dictionary=True)
+            
+            try:
+                # Calculate subscription period
+                start_date = datetime.now()
+                period_end = calculate_period_end(start_date, plan['interval'], plan['interval_count'])
+                
+                # Update subscription status
+                cursor.execute(f"""
+                    UPDATE {DB_TABLE_USER_SUBSCRIPTIONS}
+                    SET status = 'active', 
+                        current_period_start = %s,
+                        current_period_end = %s,
+                        updated_at = NOW()
+                    WHERE razorpay_subscription_id = %s
+                """, (start_date, period_end, subscription['razorpay_subscription_id']))
+                
+                # Record payment if provided
+                if payment_id:
+                    # Check if invoice already exists for this payment
+                    cursor.execute("""
+                        SELECT id FROM subscription_invoices 
+                        WHERE razorpay_payment_id = %s
+                    """, (payment_id,))
+                    
+                    existing_invoice = cursor.fetchone()
+                    
+                    if not existing_invoice:
+                        invoice_id = generate_id('inv_')
+                        razorpay_invoice_id = f'manual_activation_{payment_id}'  # More descriptive
+                        
+                        cursor.execute("""
+                            INSERT INTO subscription_invoices
+                            (id, subscription_id, user_id, razorpay_payment_id, razorpay_invoice_id, amount, status, 
+                            payment_id, app_id, invoice_date, paid_at)
+                            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, NOW(), NOW())
+                        """, (
+                            invoice_id, 
+                            subscription['id'],
+                            subscription['user_id'],
+                            payment_id,
+                            razorpay_invoice_id,  # Using descriptive invoice ID
+                            plan['amount'],
+                            'paid',
+                            payment_id,
+                            subscription['app_id']
+                        ))
+                    else:
+                        logger.info(f"Invoice already exists for payment {payment_id}, skipping creation")
+                
+                # Log the manual activation
+                self.db.log_event(
+                    'manual_activation',
+                    subscription['razorpay_subscription_id'],
+                    subscription['user_id'],
+                    {'payment_id': payment_id},
+                    provider='razorpay',
+                    processed=True
+                )
+                
+                conn.commit()
+                cursor.close()
+                conn.close()
+                
+                logger.info(f"Subscription {subscription['razorpay_subscription_id']} manually activated")
+                return {'status': 'success', 'message': 'Subscription activated'}
+                
+            except Exception as e:
+                conn.rollback()
+                cursor.close()
+                conn.close()
+                raise
+                
+        except Exception as e:
+            logger.error(f"Error in activation transaction: {str(e)}")
+            raise
 
     def get_resource_limits(self, user_id, app_id):
        """
@@ -2778,6 +2763,10 @@ class PaymentService:
             return self._handle_razorpay_subscription_halted(payload)
         elif event_type == 'subscription.updated':  # NEW
             return self._handle_razorpay_subscription_updated(payload)
+        elif event_type == 'payment_link.paid':     # NEW
+            return self._handle_razorpay_payment_link_paid(payload)
+        elif event_type == 'payment.captured':      # NEW
+            return self._handle_razorpay_payment_captured(payload)
         else:
             return {'status': 'ignored', 'message': f'Unhandled event type: {event_type}'}
 
@@ -2836,7 +2825,342 @@ class PaymentService:
             logger.error(traceback.format_exc())
             return {'status': 'error', 'message': str(e)}
 
-    
+    def _check_existing_invoice(self, payment_id, razorpay_invoice_id):
+        """Check if an invoice already exists for a payment ID or Razorpay invoice ID"""
+        try:
+            conn = self.db.get_connection()
+            cursor = conn.cursor(dictionary=True)
+            
+            cursor.execute("""
+                SELECT id, subscription_id, metadata FROM subscription_invoices 
+                WHERE razorpay_payment_id = %s OR razorpay_invoice_id = %s
+            """, (payment_id, razorpay_invoice_id))
+            
+            existing_invoice = cursor.fetchone()
+            
+            cursor.close()
+            conn.close()
+            
+            return existing_invoice
+        except Exception as e:
+            logger.error(f"Error checking existing invoice: {str(e)}")
+            if 'cursor' in locals() and cursor:
+                cursor.close()
+            if 'conn' in locals() and conn:
+                conn.close()
+            return None
+
+    def _process_excess_consumption_payment(self, payment_id, subscription_id, payment_data, existing_invoice=None):
+        """Process excess consumption payment and mark as processed"""
+        try:
+            # If invoice exists, check if already processed
+            if existing_invoice:
+                metadata = existing_invoice.get('metadata', {})
+                if isinstance(metadata, str):
+                    try:
+                        metadata = json.loads(metadata)
+                    except:
+                        metadata = {}
+                
+                if metadata.get('excess_consumption_processed'):
+                    logger.info(f"Payment {payment_id} already processed for excess consumption, skipping")
+                    return {
+                        'status': 'success',
+                        'message': 'Payment already processed',
+                        'already_processed': True
+                    }
+            
+            # Process the payment
+            result = self.handle_additional_payment_completion(payment_id, subscription_id)
+            
+            # Create or update invoice with processed flag
+            payment_amount = payment_data.get('amount', 0) / 100  # Convert paisa to rupees
+            payment_currency = payment_data.get('currency', 'INR')
+            payment_method = payment_data.get('method')
+            razorpay_invoice_id = payment_data.get('invoice_id')
+            
+            self._create_or_update_invoice(
+                payment_id, 
+                razorpay_invoice_id,
+                subscription_id,
+                payment_amount,
+                payment_currency,
+                payment_method,
+                existing_invoice,
+                {'excess_consumption_processed': True}
+            )
+            
+            return {
+                'status': 'success',
+                'message': 'Excess consumption payment processed',
+                'result': result
+            }
+        except Exception as e:
+            logger.error(f"Error processing excess consumption payment: {str(e)}")
+            logger.error(traceback.format_exc())
+            return {'status': 'error', 'message': str(e)}
+
+    def _create_or_update_invoice(self, payment_id, razorpay_invoice_id, subscription_id, 
+                                amount, currency, payment_method, existing_invoice=None, metadata=None):
+        """Create a new invoice or update an existing one"""
+        try:
+            conn = self.db.get_connection()
+            cursor = conn.cursor(dictionary=True)
+            
+            if existing_invoice and metadata:
+                # Update existing invoice with metadata
+                cursor.execute("""
+                    UPDATE subscription_invoices
+                    SET metadata = JSON_MERGE_PATCH(IFNULL(metadata, '{}'), %s),
+                        updated_at = NOW()
+                    WHERE id = %s
+                """, (json.dumps(metadata), existing_invoice['id']))
+                
+                invoice_id = existing_invoice['id']
+                logger.info(f"Updated invoice {invoice_id} with metadata")
+            elif not existing_invoice:
+                # Get subscription details
+                cursor.execute("""
+                    SELECT user_id, app_id FROM user_subscriptions
+                    WHERE id = %s
+                """, (subscription_id,))
+                
+                sub_info = cursor.fetchone()
+                if sub_info:
+                    user_id = sub_info['user_id']
+                    app_id = sub_info['app_id']
+                    
+                    # Create new invoice
+                    invoice_id = generate_id('inv_')
+                    
+                    meta_field = ", metadata" if metadata else ""
+                    meta_value = ", %s" if metadata else ""
+                    
+                    query = f"""
+                        INSERT INTO subscription_invoices
+                        (id, subscription_id, user_id, razorpay_payment_id, razorpay_invoice_id, amount, currency,
+                        status, payment_method, invoice_date, paid_at, app_id{meta_field})
+                        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, NOW(), NOW(), %s{meta_value})
+                    """
+                    
+                    params = [
+                        invoice_id,
+                        subscription_id,
+                        user_id,
+                        payment_id,
+                        razorpay_invoice_id,
+                        amount,
+                        currency,
+                        'paid',
+                        payment_method or 'unknown',
+                        app_id
+                    ]
+                    
+                    if metadata:
+                        params.append(json.dumps(metadata))
+                    
+                    cursor.execute(query, params)
+                    
+                    logger.info(f"Created invoice {invoice_id} for payment {payment_id}")
+                else:
+                    logger.warning(f"Could not create invoice - subscription {subscription_id} details not found")
+                    cursor.close()
+                    conn.close()
+                    return None
+            
+            conn.commit()
+            cursor.close()
+            conn.close()
+            
+            return invoice_id
+        except Exception as e:
+            logger.error(f"Error creating/updating invoice: {str(e)}")
+            if 'cursor' in locals() and cursor:
+                cursor.close()
+            if 'conn' in locals() and conn:
+                conn.close()
+            return None
+
+    def _handle_razorpay_payment_captured(self, payload):
+        """Handle payment.captured webhook event"""
+        try:
+            payment_data = payload.get('payload', {}).get('payment', {}).get('entity', {})
+            
+            payment_id = payment_data.get('id')
+            payment_amount = payment_data.get('amount', 0) / 100  # Convert paisa to rupees
+            payment_currency = payment_data.get('currency', 'INR')
+            payment_method = payment_data.get('method')
+            razorpay_invoice_id = payment_data.get('invoice_id')
+            
+            # Extract payment notes
+            notes = payment_data.get('notes', {})
+            if isinstance(notes, list) or notes is None:
+                notes = {}
+            
+            logger.info(f"Processing payment captured: ID={payment_id}, Amount={payment_amount}, Method={payment_method}")
+            
+            # Check if invoice already exists
+            existing_invoice = self._check_existing_invoice(payment_id, razorpay_invoice_id)
+            
+            # Handle excess consumption payment
+            if notes.get('payment_type') == 'excess_consumption':
+                subscription_id = notes.get('subscription_id')
+                
+                if not subscription_id:
+                    logger.error("Missing subscription_id in payment notes")
+                    return {'status': 'error', 'message': 'Missing subscription ID'}
+                
+                return self._process_excess_consumption_payment(
+                    payment_id, 
+                    subscription_id, 
+                    payment_data, 
+                    existing_invoice
+                )
+            
+            # Handle regular payment (not excess consumption)
+            if existing_invoice:
+                logger.info(f"Invoice already exists for payment {payment_id}, skipping creation")
+                return {
+                    'status': 'success',
+                    'message': 'Invoice already exists',
+                    'invoice_id': existing_invoice['id']
+                }
+            
+            # Try to find subscription ID from different sources
+            subscription_id = notes.get('subscription_id')
+            
+            # Check if this is a subscription payment from Razorpay
+            subscription_id_from_payment = payment_data.get('subscription_id')
+            if subscription_id_from_payment and not subscription_id:
+                # Look up our internal subscription ID
+                conn = self.db.get_connection()
+                cursor = conn.cursor(dictionary=True)
+                cursor.execute("""
+                    SELECT id FROM user_subscriptions
+                    WHERE razorpay_subscription_id = %s
+                """, (subscription_id_from_payment,))
+                
+                sub_result = cursor.fetchone()
+                cursor.close()
+                conn.close()
+                
+                if sub_result:
+                    subscription_id = sub_result['id']
+                    logger.info(f"Found subscription ID {subscription_id} from Razorpay subscription {subscription_id_from_payment}")
+            
+            # Create invoice if we have a subscription ID
+            if subscription_id:
+                invoice_id = self._create_or_update_invoice(
+                    payment_id,
+                    razorpay_invoice_id,
+                    subscription_id,
+                    payment_amount,
+                    payment_currency,
+                    payment_method
+                )
+                
+                if invoice_id:
+                    return {
+                        'status': 'success',
+                        'message': 'Invoice created',
+                        'invoice_id': invoice_id
+                    }
+            
+            # If we get here, we couldn't create an invoice due to missing subscription ID
+            logger.warning(f"Could not create invoice for payment {payment_id} - no subscription ID found")
+            
+            return {
+                'status': 'success',
+                'message': 'Payment processed but no invoice created - missing subscription ID',
+                'payment_id': payment_id
+            }
+            
+        except Exception as e:
+            logger.error(f"Error handling payment captured: {str(e)}")
+            logger.error(traceback.format_exc())
+            return {'status': 'error', 'message': str(e)}
+
+    def _handle_razorpay_payment_link_paid(self, payload):
+        """Handle payment_link.paid webhook event"""
+        try:
+            payment_link_data = payload.get('payload', {}).get('payment_link', {}).get('entity', {})
+            payment_data = payload.get('payload', {}).get('payment', {}).get('entity', {})
+            
+            payment_id = payment_data.get('id')
+            payment_amount = payment_data.get('amount', 0) / 100  # Convert paisa to rupees
+            payment_currency = payment_data.get('currency', 'INR')
+            payment_method = payment_data.get('method')
+            razorpay_invoice_id = payment_data.get('invoice_id')
+            
+            # Extract payment link notes
+            notes = payment_link_data.get('notes', {})
+            if isinstance(notes, list) or notes is None:
+                notes = {}
+            
+            logger.info(f"Processing payment link paid: ID={payment_id}, Amount={payment_amount}, Method={payment_method}")
+            
+            # Check if invoice already exists
+            existing_invoice = self._check_existing_invoice(payment_id, razorpay_invoice_id)
+            
+            # Handle excess consumption payment
+            if notes.get('payment_type') == 'excess_consumption':
+                subscription_id = notes.get('subscription_id')
+                
+                if not subscription_id:
+                    logger.error("Missing subscription_id in payment link notes")
+                    return {'status': 'error', 'message': 'Missing subscription ID'}
+                
+                return self._process_excess_consumption_payment(
+                    payment_id, 
+                    subscription_id, 
+                    payment_data, 
+                    existing_invoice
+                )
+            
+            # Handle regular payment (not excess consumption)
+            if existing_invoice:
+                logger.info(f"Invoice already exists for payment {payment_id}, skipping creation")
+                return {
+                    'status': 'success',
+                    'message': 'Invoice already exists',
+                    'invoice_id': existing_invoice['id']
+                }
+            
+            # Extract whatever information is available
+            subscription_id = notes.get('subscription_id')
+            
+            # Create invoice if we have a subscription ID
+            if subscription_id:
+                invoice_id = self._create_or_update_invoice(
+                    payment_id,
+                    razorpay_invoice_id,
+                    subscription_id,
+                    payment_amount,
+                    payment_currency,
+                    payment_method
+                )
+                
+                if invoice_id:
+                    return {
+                        'status': 'success',
+                        'message': 'Invoice created for payment link',
+                        'invoice_id': invoice_id
+                    }
+            
+            # If we get here, we couldn't create an invoice due to missing details
+            logger.warning(f"Could not create invoice for payment link {payment_id} - missing subscription details")
+            
+            return {
+                'status': 'success',
+                'message': 'Payment link processed but no invoice created - missing details',
+                'payment_id': payment_id
+            }
+            
+        except Exception as e:
+            logger.error(f"Error handling payment link paid: {str(e)}")
+            logger.error(traceback.format_exc())
+            return {'status': 'error', 'message': str(e)}
+        
     def _get_subscription_payment_method(self, subscription):
         """Detect payment method from database records and metadata"""
         try:
@@ -2969,160 +3293,6 @@ class PaymentService:
             logger.error(f"Error in INR upgrade with payment method: {str(e)}")
             raise
 
-    def _handle_inr_upgrade_with_discount(self, subscription, current_plan, new_plan, app_id, 
-                                        discount_offer_pct, discount_amount, payment_method,
-                                        time_remaining, resource_remaining, value_remaining_amount):
-        """Handle INR upgrade with discount for UPI/Card"""
-        try:
-            # Get the appropriate offer ID
-            offer_id = self._get_razorpay_offer_id(discount_offer_pct, payment_method)
-            if not offer_id:
-                logger.warning(f"No offer found for {discount_offer_pct}% {payment_method}, falling back to manual refund")
-                return self._handle_inr_upgrade_with_refund(
-                    subscription, current_plan, new_plan, app_id,
-                    discount_offer_pct, discount_amount, payment_method,
-                    time_remaining, resource_remaining, value_remaining_amount
-                )
-            
-            # NEW MESSAGE (use this):
-            message = (
-                f"Upgrading from {current_plan['name']} to {new_plan['name']}. "
-                f"Your current plan has {time_remaining:.0f}% time remaining and {resource_remaining:.0f}% resources remaining. "
-                f"Since your payment method is {payment_method.upper()}, we're applying a {discount_offer_pct}% discount "
-                f"to account for the remaining value."
-            )
-            
-            # Phase 1: Cancel current subscription
-            logger.info("[UPGRADE] Cancelling current subscription for discount flow")
-            cancel_result = self._cancel_razorpay_subscription_immediately(subscription)
-            
-            # Phase 2: Create new subscription with specific offer ID
-            logger.info(f"[UPGRADE] Creating new subscription with offer {offer_id}")
-            new_subscription_result = self._create_subscription_with_specific_offer(
-                subscription['user_id'], 
-                new_plan['id'], 
-                app_id, 
-                offer_id,
-                payment_method
-            )
-            
-            # Phase 3: Log the upgrade
-            self.db.log_subscription_action(
-                subscription['id'],
-                'inr_upgrade_with_discount',
-                {
-                    'old_plan_id': current_plan['id'],
-                    'new_plan_id': new_plan['id'],
-                    'payment_method': payment_method,
-                    'discount_applied_pct': discount_offer_pct,
-                    'offer_id_used': offer_id,
-                    'cancel_result': cancel_result,
-                    'new_subscription': new_subscription_result
-                },
-                f"user_{subscription['user_id']}"
-            )
-            
-            return {
-                'success': True,
-                'upgrade_type': 'cancel_and_recreate_with_discount',
-                'old_subscription_id': subscription['id'],
-                'new_subscription': new_subscription_result,
-                'payment_method': payment_method,
-                'discount_applied': discount_offer_pct,
-                'discount_amount': discount_amount,
-                'offer_id_used': offer_id,
-                'final_amount': float(new_plan['amount']) - float(discount_amount),
-                'message': message,
-                'razorpay_link': new_subscription_result.get('short_url'),
-                'calculation_details': {
-                    'original_price': new_plan['amount'],
-                    'discount_percentage': discount_offer_pct,
-                    'discount_amount': discount_amount,
-                    'final_amount': float(new_plan['amount']) - float(discount_amount),
-                    'remaining_value_adjustment': True
-                }
-            }
-            
-        except Exception as e:
-            logger.error(f"Error in discount flow: {str(e)}")
-            raise
-
-    def _handle_inr_upgrade_with_refund(self, subscription, current_plan, new_plan, app_id,
-                                    discount_offer_pct, discount_amount, payment_method,
-                                    time_remaining, resource_remaining, value_remaining_amount):
-        """Handle INR upgrade with manual refund for other payment methods"""
-        try:
-            # Create detailed message for refund flow
-            message = (
-                f"Upgrading from {current_plan['name']} to {new_plan['name']}. "
-                f"Your current plan has {time_remaining:.0f}% time remaining and {resource_remaining:.0f}% resources remaining. "
-                f"Since your payment method is {payment_method.upper()}, you'll pay the full amount (₹{new_plan['amount']}) now "
-                f"and receive a refund of ₹{value_remaining_amount:.0f} for your remaining subscription value in 3-5 working days."
-            )
-            
-            # Phase 1: Cancel current subscription
-            logger.info("[UPGRADE] Cancelling current subscription for refund flow")
-            cancel_result = self._cancel_razorpay_subscription_immediately(subscription)
-            
-            # Phase 2: Create new subscription without discount
-            logger.info("[UPGRADE] Creating new subscription at full price")
-            new_subscription_result = self._create_subscription_full_price(
-                subscription['user_id'], 
-                new_plan['id'], 
-                app_id
-            )
-            
-            # Phase 3: Schedule manual refund
-            refund_record_id = self._schedule_manual_refund(
-                subscription['user_id'],
-                subscription['id'],
-                value_remaining_amount,
-                current_plan,
-                payment_method
-            )
-            
-            # Phase 4: Log the upgrade
-            self.db.log_subscription_action(
-                subscription['id'],
-                'inr_upgrade_with_manual_refund',
-                {
-                    'old_plan_id': current_plan['id'],
-                    'new_plan_id': new_plan['id'],
-                    'payment_method': payment_method,
-                    'refund_amount': value_remaining_amount,
-                    'refund_record_id': refund_record_id,
-                    'cancel_result': cancel_result,
-                    'new_subscription': new_subscription_result
-                },
-                f"user_{subscription['user_id']}"
-            )
-            
-            return {
-                'success': True,
-                'upgrade_type': 'cancel_and_recreate_with_refund',
-                'old_subscription_id': subscription['id'],
-                'new_subscription': new_subscription_result,
-                'payment_method': payment_method,
-                'refund_amount': value_remaining_amount,
-                'refund_record_id': refund_record_id,
-                'full_payment_required': True,
-                'message': message,
-                'razorpay_link': new_subscription_result.get('short_url'),
-                'refund_details': {
-                    'refund_amount': value_remaining_amount,
-                    'processing_time': '3-5 working days',
-                    'refund_type': 'manual_processing'
-                },
-                'calculation_details': {
-                    'new_plan_price': new_plan['amount'],
-                    'refund_amount': value_remaining_amount,
-                    'net_upgrade_cost': new_plan['amount'] - value_remaining_amount
-                }
-            }
-            
-        except Exception as e:
-            logger.error(f"Error in refund flow: {str(e)}")
-            raise
 
     def _create_subscription_with_specific_offer(self, user_id, plan_id, app_id, offer_id, payment_method):
         """Create subscription with specific Razorpay offer ID"""
@@ -3523,170 +3693,6 @@ class PaymentService:
             logger.error(f"[UPGRADE] Service exception: {str(e)}")
             raise
 
-    def _upgrade_razorpay_subscription(self, subscription, new_plan_id, proration_result):
-        """Handle Razorpay subscription upgrade without proration"""
-        try:
-            logger.info("[UPGRADE] Razorpay upgrade started")
-            razorpay_subscription_id = subscription['razorpay_subscription_id']
-            
-            logger.info("[UPGRADE] Getting new plan details")
-            new_plan = self._get_plan(new_plan_id)
-            if not new_plan:
-                raise ValueError(f"Plan {new_plan_id} not found")
-            
-            logger.info("[UPGRADE] Calling Razorpay edit API (without proration)")
-            # Only change the plan, no proration applied
-            response = self.razorpay.client.subscription.edit(razorpay_subscription_id, {
-                'plan_id': new_plan_id
-            })
-            
-            logger.info("[UPGRADE] Razorpay API call completed")
-            
-            if 'error' in response:
-                error_msg = response.get('error', {}).get('description', 'Unknown error')
-                
-                # Handle UPI limitation specifically
-                if 'upi' in error_msg.lower():
-                    return {
-                        'error': True,
-                        'error_type': 'upi_upgrade_not_supported',
-                        'message': 'Since your subscription is set-up on UPI payments, you need to cancel the subscription and get the new subscription. Or you can contact us using the contact form link at bottom of page.',
-                        'support_action': 'cancel_and_resubscribe'
-                    }
-                
-                raise ValueError(f"Razorpay upgrade failed: {error_msg}")
-            
-            # Phase 2: Update local database
-            logger.info("[UPGRADE] Updating local subscription record")
-            self._update_subscription_plan(subscription['id'], new_plan_id)
-            
-            # Phase 3: Update quotas immediately  
-            logger.info("[UPGRADE] Updating resource quotas")
-            self.initialize_resource_quota(
-                subscription['user_id'], 
-                subscription['id'], 
-                subscription['app_id']
-            )
-            
-            # Phase 4: Log the upgrade
-            logger.info("[UPGRADE] Logging upgrade completion")
-            self.db.log_subscription_action(
-                subscription['id'],
-                'razorpay_upgrade_completed',
-                {
-                    'razorpay_subscription_id': razorpay_subscription_id,
-                    'new_plan_id': new_plan_id,
-                    'calculated_proration_amount': proration_result.get('prorated_amount', 0),
-                    'proration_applied': False,
-                    'razorpay_response': response
-                },
-                f"user_{subscription['user_id']}"
-            )
-            
-            logger.info("[UPGRADE] Razorpay upgrade completed successfully")
-            return {
-                'success': True,
-                'subscription_id': subscription['id'],
-                'new_plan_id': new_plan_id,
-                'calculated_proration_amount': proration_result.get('prorated_amount', 0),
-                'proration_applied': False,
-                'razorpay_response': response,
-                'message': 'Subscription upgraded successfully (no proration applied)'
-            }
-            
-        except Exception as e:
-            error_msg = str(e)
-            logger.info(f"[UPGRADE] Razorpay upgrade exception: {error_msg}")
-            
-            # Handle UPI limitation in exceptions too
-            if 'upi' in error_msg.lower():
-                return {
-                    'error': True,
-                    'error_type': 'upi_upgrade_not_supported',
-                    'message': 'Since your subscription is set-up on UPI payments, you need to cancel the subscription and get the new subscription. Or you can contact us using the contact form link at bottom of page.',
-                    'support_action': 'cancel_and_resubscribe'
-                }
-            
-            raise
-
-    def _handle_inr_upgrade(self, subscription, current_plan, new_plan, app_id, billing_cycle_info, resource_info):
-        """Handle INR upgrades - Cancel old and create new with discount"""
-        logger.info("[UPGRADE] Handling INR upgrade - cancel and recreate")
-        
-        try:
-            # Calculate value remaining and messaging
-            value_remaining_pct = self._calculate_value_remaining_percentage(billing_cycle_info, resource_info)
-            value_remaining_amount = value_remaining_pct * self._ensure_float(current_plan['amount'])
-            discount_pct_of_new_plan = (value_remaining_amount / self._ensure_float(new_plan['amount'])) * 100
-            
-            discount_result = self._get_discount_offer_for_value(discount_pct_of_new_plan)
-            if discount_result.get('error'):
-                return discount_result
-            
-            discount_offer_pct = discount_result
-            discount_amount = (discount_offer_pct / 100) * self._ensure_float(new_plan['amount'])
-            
-            # Create detailed message
-            time_remaining = billing_cycle_info['time_factor'] * 100
-            resource_remaining = (1 - resource_info['base_plan_consumed_pct']) * 100
-            
-            message = (
-                f"Upgrading from {current_plan['name']} to {new_plan['name']}. "
-                f"Your current plan has {time_remaining:.0f}% time remaining and {resource_remaining:.0f}% resources remaining. "
-                f"We're applying a {discount_offer_pct}% discount (₹{discount_amount:.0f} off) to your new plan to account for the remaining value. "
-                f"This ensures you only pay for what you use!"
-            )
-            
-            # Phase 1: Cancel current subscription
-            logger.info("[UPGRADE] Cancelling current subscription")
-            cancel_result = self._cancel_razorpay_subscription_immediately(subscription)
-            
-            # Phase 2: Create new subscription with discount
-            logger.info("[UPGRADE] Creating new subscription with discount")
-            new_subscription_result = self._create_subscription_with_discount(
-                subscription['user_id'], 
-                new_plan['id'], 
-                app_id, 
-                discount_offer_pct
-            )
-            
-            # Phase 3: Log the upgrade
-            self.db.log_subscription_action(
-                subscription['id'],
-                'inr_upgrade_cancel_recreate',
-                {
-                    'old_plan_id': current_plan['id'],
-                    'new_plan_id': new_plan['id'],
-                    'value_remaining_pct': value_remaining_pct,
-                    'discount_applied_pct': discount_offer_pct,
-                    'cancel_result': cancel_result,
-                    'new_subscription': new_subscription_result
-                },
-                f"user_{subscription['user_id']}"
-            )
-            
-            return {
-                'success': True,
-                'upgrade_type': 'cancel_and_recreate',
-                'old_subscription_id': subscription['id'],
-                'new_subscription': new_subscription_result,
-                'discount_applied': discount_offer_pct,
-                'discount_amount': discount_amount,
-                'value_remaining': f"{value_remaining_pct:.1%}",
-                'message': message,
-                'razorpay_link': new_subscription_result.get('short_url'),
-                'calculation_details': {
-                    'old_plan_remaining_value': value_remaining_amount,
-                    'new_plan_price': new_plan['amount'],
-                    'discount_percentage': discount_offer_pct,
-                    'you_save': discount_amount
-                }
-            }
-            
-        except Exception as e:
-            logger.error(f"Error in INR upgrade: {str(e)}")
-            raise
-
     def _handle_usd_razorpay_upgrade(self, subscription, current_plan, new_plan, app_id, billing_cycle_info, resource_info):
         """Handle USD Razorpay upgrades"""
         logger.info("[UPGRADE] Handling USD Razorpay upgrade")
@@ -3936,46 +3942,6 @@ class PaymentService:
             logger.error(f"Error cancelling Razorpay subscription: {str(e)}")
             return {'error': True, 'message': str(e)}
         
-    def _create_subscription_with_discount(self, user_id, plan_id, app_id, discount_pct):
-        """Create new subscription with discount offer"""
-        try:
-            user = self._get_user_info(user_id)
-            if not user:
-                raise ValueError("User not found")
-            
-            plan = self._get_plan(plan_id)
-            if not plan:
-                raise ValueError("Plan not found")
-            
-            customer_info = {
-                'user_id': user['google_uid'], 
-                'email': user.get('email'), 
-                'name': user.get('display_name')
-            }
-            
-            additional_notes = {
-                'discount_offer': discount_pct,
-                'upgrade_discount': True
-            }
-            
-            response = self.razorpay.create_subscription_with_offer(
-                plan['razorpay_plan_id'] or plan['id'],
-                customer_info,
-                app_id,
-                discount_offer_pct=discount_pct,
-                additional_notes=additional_notes
-            )
-            
-            if response.get('error'):
-                raise ValueError(response.get('message', 'Failed to create subscription'))
-            
-            response['gateway'] = 'razorpay'
-            return self._save_paid_subscription(user_id, plan_id, app_id, response)
-            
-        except Exception as e:
-            logger.error(f"Error creating subscription with discount: {str(e)}")
-            raise
-
     def _update_subscription_status_by_razorpay_id(self, razorpay_subscription_id, status):
         """Update subscription status by Razorpay ID"""
         try:
