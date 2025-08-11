@@ -38,8 +38,8 @@ def verify_razorpay_signature(payload, signature):
 
 def handle_razorpay_webhook(payment_service):
     """
-    Handle Razorpay webhook events and update subscription statuses
-    Enhanced to handle payment link events for upgrade flows
+    Handle Razorpay webhook events - HTTP layer only
+    All business logic delegated to service layer
     
     Args:
         payment_service: The PaymentService instance
@@ -48,23 +48,22 @@ def handle_razorpay_webhook(payment_service):
         tuple: Response object and status code
     """
     try:
-        # Get the webhook signature
+        # 1. Signature verification
         webhook_signature = request.headers.get('X-Razorpay-Signature')
         payload = request.data
         
         logger.info(f"Received Razorpay webhook, payload length: {len(payload)}")
         
-        # Verify the signature if provided
         if webhook_signature:
             if not verify_razorpay_signature(payload, webhook_signature):
                 logger.warning("Invalid Razorpay webhook signature")
                 return {'error': 'Invalid signature'}, 400
         
-        # Parse the webhook payload
+        # 2. Parse payload
         webhook_data = request.json
         event_type = webhook_data.get('event')
         
-        # Generate event ID for idempotency (Razorpay doesn't provide unique event ID)
+        # 3. Generate event ID for idempotency
         event_id = f"razorpay_{event_type}_{webhook_data.get('created_at', '')}"
         if 'payload' in webhook_data and 'subscription' in webhook_data['payload']:
             sub_data = webhook_data['payload']['subscription']
@@ -74,104 +73,25 @@ def handle_razorpay_webhook(payment_service):
         
         logger.info(f"Processing Razorpay webhook: {event_type}, Event ID: {event_id}")
         
-        # Check idempotency
+        # 4. Idempotency check
         if payment_service.db.is_event_processed(event_id, 'razorpay'):
             logger.info(f"Razorpay event {event_id} already processed")
             return {'status': 'already_processed'}, 200
         
-        # NEW: Handle payment link events for upgrade flows
-        if event_type == 'payment_link.paid':
-            logger.info("Processing payment_link.paid event")
-            payment_link_data = webhook_data.get('payload', {}).get('payment_link', {}).get('entity', {})
-            payment_data = webhook_data.get('payload', {}).get('payment', {}).get('entity', {})
-            
-            # Check if this payment was for excess resource consumption
-            notes = payment_link_data.get('notes', {})
-            # FIX: Handle notes as list
-            if isinstance(notes, list):
-                notes = {}
-                
-            if notes.get('payment_type') == 'excess_consumption':
-                logger.info("Processing excess consumption payment via payment link")
-                subscription_id = notes.get('subscription_id')
-                payment_id = payment_data.get('id')
-                
-                if subscription_id and payment_id:
-                    result = payment_service.handle_additional_payment_completion(payment_id, subscription_id)
-                    
-                    # Mark event as processed
-                    payment_service.db.mark_event_processed(event_id, 'razorpay')
-                    
-                    return {
-                        'status': 'success',
-                        'message': 'Additional payment processed via payment link',
-                        'result': result
-                    }, 200
-                else:
-                    logger.warning("Missing subscription_id or payment_id in payment link webhook")
+        # 5. Delegate ALL business logic to service layer
+        result = payment_service.process_webhook_event(
+            provider='razorpay',
+            event_type=event_type,
+            event_id=event_id,
+            payload=webhook_data
+        )
         
-        # Enhanced payment.captured event handling
-        elif event_type == 'payment.captured':
-            logger.info("Processing payment.captured event")
-            payment_data = webhook_data.get('payload', {}).get('payment', {}).get('entity', {})
-            notes = payment_data.get('notes')
-            
-            # FIX: Handle notes as list
-            if notes is None or isinstance(notes, list):
-                notes = {}
-            
-            # NEW: Check if this is excess consumption payment
-            if notes.get('payment_type') == 'excess_consumption':
-                logger.info("Processing excess consumption payment via payment.captured")
-                subscription_id = notes.get('subscription_id')
-                payment_id = payment_data.get('id')
-                
-                if subscription_id and payment_id:
-                    result = payment_service.handle_additional_payment_completion(payment_id, subscription_id)
-                    
-                    # Mark event as processed
-                    payment_service.db.mark_event_processed(event_id, 'razorpay')
-                    
-                    return {
-                        'status': 'success', 
-                        'message': 'Excess consumption payment processed via payment.captured',
-                        'result': result
-                    }, 200
-                else:
-                    logger.warning("Missing subscription_id or payment_id in payment.captured webhook")
-        
-        # Enhanced debugging for subscription events
-        if event_type and event_type.startswith('subscription.'):
-            subscription_data = webhook_data.get('payload', {}).get('subscription', {})
-            subscription_id = subscription_data.get('entity', {}).get('id') if 'entity' in subscription_data else subscription_data.get('id')
-            
-            logger.info(f"Subscription event: {event_type}, ID: {subscription_id}")
-            
-            # Check for missing data
-            if not subscription_id:
-                logger.warning(f"Missing subscription ID in {event_type} webhook")
-                logger.debug(f"Webhook payload structure: {json.dumps(webhook_data, indent=2)}")
-            
-            # Reset quota on subscription renewal events
-            if event_type == 'subscription.charged':
-                # Get the internal subscription ID
-                subscription = payment_service.get_subscription_by_gateway_id(subscription_id, 'razorpay')
-                
-                if subscription:
-                    logger.info(f"Resetting quota for subscription {subscription.get('id')} after renewal")
-                    payment_service.reset_quota_on_renewal(subscription.get('id'))
-        
-        # Process the webhook event using existing handler
-        result = payment_service.handle_webhook(webhook_data, provider='razorpay')
-        
-        # Mark event as processed
-        payment_service.db.mark_event_processed(event_id, 'razorpay')
-        
+        # 6. Return HTTP response
         return {
-            'status': 'success', 
-            'message': f'Processed {event_type} event',
-            'result': result
-        }, 200
+            'status': 'success' if result.get('success') else 'error',
+            'message': result.get('message', f'Processed {event_type} event'),
+            'event_type': event_type
+        }, 200 if result.get('success') else 500
         
     except Exception as e:
         logger.error(f"Error handling Razorpay webhook: {str(e)}")
