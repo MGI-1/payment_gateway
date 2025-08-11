@@ -2794,7 +2794,7 @@ class PaymentService:
             cursor = conn.cursor(dictionary=True)
             
             cursor.execute("""
-                SELECT id, subscription_id, metadata FROM subscription_invoices 
+                SELECT id, subscription_id FROM subscription_invoices 
                 WHERE razorpay_payment_id = %s OR razorpay_invoice_id = %s
             """, (payment_id, razorpay_invoice_id))
             
@@ -2815,128 +2815,95 @@ class PaymentService:
     def _process_excess_consumption_payment(self, payment_id, subscription_id, payment_data, existing_invoice=None):
         """Process excess consumption payment and mark as processed"""
         try:
-            # If invoice exists, check if already processed
+            # If invoice exists for excess consumption payment, consider it already processed
             if existing_invoice:
-                metadata = existing_invoice.get('metadata', {})
-                if isinstance(metadata, str):
-                    try:
-                        metadata = json.loads(metadata)
-                    except:
-                        metadata = {}
-                
-                if metadata.get('excess_consumption_processed'):
-                    logger.info(f"Payment {payment_id} already processed for excess consumption, skipping")
-                    return {
-                        'status': 'success',
-                        'message': 'Payment already processed',
-                        'already_processed': True
-                    }
+                logger.info(f"Invoice already exists for excess consumption payment {payment_id}, skipping processing")
+                return {
+                    'status': 'success',
+                    'message': 'Excess consumption payment already processed',
+                    'already_processed': True,
+                    'invoice_id': existing_invoice['id']
+                }
             
-            # Process the payment
+            # Process the payment (only if no existing invoice)
             result = self.handle_additional_payment_completion(payment_id, subscription_id)
             
-            # Create or update invoice with processed flag
-            payment_amount = payment_data.get('amount', 0) / 100  # Convert paisa to rupees
+            # Create invoice to mark as processed
+            payment_amount = payment_data.get('amount', 0) / 100
             payment_currency = payment_data.get('currency', 'INR')
             payment_method = payment_data.get('method')
             razorpay_invoice_id = payment_data.get('invoice_id')
             
-            self._create_or_update_invoice(
+            invoice_id = self._create_simple_invoice(
                 payment_id, 
                 razorpay_invoice_id,
                 subscription_id,
                 payment_amount,
                 payment_currency,
-                payment_method,
-                existing_invoice,
-                {'excess_consumption_processed': True}
+                payment_method
             )
             
             return {
                 'status': 'success',
                 'message': 'Excess consumption payment processed',
-                'result': result
+                'result': result,
+                'invoice_id': invoice_id
             }
         except Exception as e:
             logger.error(f"Error processing excess consumption payment: {str(e)}")
             logger.error(traceback.format_exc())
             return {'status': 'error', 'message': str(e)}
 
-    def _create_or_update_invoice(self, payment_id, razorpay_invoice_id, subscription_id, 
-                                amount, currency, payment_method, existing_invoice=None, metadata=None):
-        """Create a new invoice or update an existing one"""
+    def _create_simple_invoice(self, payment_id, razorpay_invoice_id, subscription_id, 
+                          amount, currency, payment_method):
+        """Create a simple invoice without metadata"""
         try:
             conn = self.db.get_connection()
             cursor = conn.cursor(dictionary=True)
             
-            if existing_invoice and metadata:
-                # Update existing invoice with metadata
-                cursor.execute("""
-                    UPDATE subscription_invoices
-                    SET metadata = JSON_MERGE_PATCH(IFNULL(metadata, '{}'), %s),
-                        updated_at = NOW()
-                    WHERE id = %s
-                """, (json.dumps(metadata), existing_invoice['id']))
-                
-                invoice_id = existing_invoice['id']
-                logger.info(f"Updated invoice {invoice_id} with metadata")
-            elif not existing_invoice:
-                # Get subscription details
-                cursor.execute("""
-                    SELECT user_id, app_id FROM user_subscriptions
-                    WHERE id = %s
-                """, (subscription_id,))
-                
-                sub_info = cursor.fetchone()
-                if sub_info:
-                    user_id = sub_info['user_id']
-                    app_id = sub_info['app_id']
-                    
-                    # Create new invoice
-                    invoice_id = generate_id('inv_')
-                    
-                    meta_field = ", metadata" if metadata else ""
-                    meta_value = ", %s" if metadata else ""
-                    
-                    query = f"""
-                        INSERT INTO subscription_invoices
-                        (id, subscription_id, user_id, razorpay_payment_id, razorpay_invoice_id, amount, currency,
-                        status, payment_method, invoice_date, paid_at, app_id{meta_field})
-                        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, NOW(), NOW(), %s{meta_value})
-                    """
-                    
-                    params = [
-                        invoice_id,
-                        subscription_id,
-                        user_id,
-                        payment_id,
-                        razorpay_invoice_id,
-                        amount,
-                        currency,
-                        'paid',
-                        payment_method or 'unknown',
-                        app_id
-                    ]
-                    
-                    if metadata:
-                        params.append(json.dumps(metadata))
-                    
-                    cursor.execute(query, params)
-                    
-                    logger.info(f"Created invoice {invoice_id} for payment {payment_id}")
-                else:
-                    logger.warning(f"Could not create invoice - subscription {subscription_id} details not found")
-                    cursor.close()
-                    conn.close()
-                    return None
+            # Get subscription details
+            cursor.execute("""
+                SELECT user_id, app_id FROM user_subscriptions
+                WHERE id = %s
+            """, (subscription_id,))
+            
+            sub_info = cursor.fetchone()
+            if not sub_info:
+                logger.error(f"Subscription {subscription_id} not found")
+                cursor.close()
+                conn.close()
+                return None
+            
+            # Create invoice
+            invoice_id = generate_id('inv_')
+            
+            cursor.execute("""
+                INSERT INTO subscription_invoices
+                (id, subscription_id, user_id, razorpay_payment_id, razorpay_invoice_id, 
+                amount, currency, status, payment_method, invoice_date, paid_at, app_id)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, NOW(), NOW(), %s)
+            """, (
+                invoice_id,
+                subscription_id,
+                sub_info['user_id'],
+                payment_id,
+                razorpay_invoice_id,
+                amount,
+                currency,
+                'paid',
+                payment_method or 'unknown',
+                sub_info['app_id']
+            ))
             
             conn.commit()
             cursor.close()
             conn.close()
             
+            logger.info(f"Created invoice {invoice_id} for excess consumption payment {payment_id}")
             return invoice_id
+            
         except Exception as e:
-            logger.error(f"Error creating/updating invoice: {str(e)}")
+            logger.error(f"Error creating simple invoice: {str(e)}")
             if 'cursor' in locals() and cursor:
                 cursor.close()
             if 'conn' in locals() and conn:
@@ -3012,7 +2979,7 @@ class PaymentService:
             
             # Create invoice if we have a subscription ID
             if subscription_id:
-                invoice_id = self._create_or_update_invoice(
+                invoice_id = self._create_simple_invoice(
                     payment_id,
                     razorpay_invoice_id,
                     subscription_id,
@@ -3093,7 +3060,7 @@ class PaymentService:
             
             # Create invoice if we have a subscription ID
             if subscription_id:
-                invoice_id = self._create_or_update_invoice(
+                invoice_id = self._create_simple_invoice(
                     payment_id,
                     razorpay_invoice_id,
                     subscription_id,
@@ -4842,3 +4809,4 @@ class PaymentService:
             raise
 
 payment_service = PaymentService()
+
