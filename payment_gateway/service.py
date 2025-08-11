@@ -2732,22 +2732,13 @@ class PaymentService:
         else:
             return {'status': 'ignored', 'message': f'Unhandled event type: {event_type}'}
 
-    # UPDATE EXISTING HANDLE_WEBHOOK METHOD
-    def handle_webhook(self, payload, provider='razorpay'):
-        """Handle webhook events for subscription updates"""
+    def process_webhook_event(self, provider, event_type, event_id, payload):
+        """
+        Centralized webhook event processing - replaces handle_webhook()
+        All webhook business logic happens here
+        """
         try:
-            if provider == 'razorpay':
-                event_type = payload.get('event')
-            elif provider == 'paypal':
-                event_type = payload.get('event_type')
-            else:
-                event_type = payload.get('event')
-            
-            if not event_type:
-                logger.error("Invalid webhook payload - no event type")
-                return {'status': 'error', 'message': 'Invalid webhook payload'}
-            
-            # Extract entity and user IDs
+            # Extract entity and user IDs for logging
             entity_id, user_id = self._extract_webhook_ids(payload, provider)
             
             # Log the webhook event
@@ -2760,17 +2751,19 @@ class PaymentService:
                 processed=False
             )
             
-            # Route to the appropriate handler based on the event type
+            # Route to provider-specific handler
             if provider == 'razorpay':
                 result = self._handle_razorpay_webhook(event_type, payload)
             elif provider == 'paypal':
-                # PayPal events are handled in the webhook handler itself
+                # Keep existing PayPal logic
                 result = {'status': 'success', 'message': f'PayPal event {event_type} processed'}
             else:
-                logger.error(f"Unknown provider: {provider}")
-                result = {'status': 'error', 'message': f'Unknown provider: {provider}'}
+                result = {'success': False, 'message': f'Unknown provider: {provider}'}
             
-            # Update the event log to mark as processed
+            # Mark event as processed
+            self.db.mark_event_processed(event_id, provider)
+            
+            # Log completion
             self.db.log_event(
                 f"{event_type}_processed",
                 entity_id,
@@ -2780,12 +2773,12 @@ class PaymentService:
                 processed=True
             )
             
-            return {'status': 'success', 'message': f'Processed {event_type} event', 'result': result}
-                
+            return {'success': True, 'message': f'Processed {event_type} event', 'result': result}
+            
         except Exception as e:
-            logger.error(f"Error handling webhook: {str(e)}")
+            logger.error(f"Error processing webhook event: {str(e)}")
             logger.error(traceback.format_exc())
-            return {'status': 'error', 'message': str(e)}
+            return {'success': False, 'message': str(e)}
 
     def _check_existing_invoice(self, payment_id, razorpay_invoice_id):
         """Check if an invoice already exists for a payment ID or Razorpay invoice ID"""
@@ -2812,20 +2805,140 @@ class PaymentService:
                 conn.close()
             return None
 
-    def _process_excess_consumption_payment(self, payment_id, subscription_id, payment_data, existing_invoice=None):
-        """Process excess consumption payment and mark as processed"""
+    def _handle_razorpay_payment_captured(self, payload):
+        """Handle payment.captured webhook - with specific handling + fallback"""
         try:
-            # If invoice exists for excess consumption payment, consider it already processed
+            payment_data = payload.get('payload', {}).get('payment', {}).get('entity', {})
+            
+            payment_id = payment_data.get('id')
+            payment_amount = payment_data.get('amount', 0) / 100
+            payment_currency = payment_data.get('currency', 'INR')
+            payment_method = payment_data.get('method')
+            razorpay_invoice_id = payment_data.get('invoice_id') or f'payment_{payment_id}'
+            
+            # Handle notes properly
+            notes = payment_data.get('notes', {})
+            if isinstance(notes, list) or notes is None:
+                notes = {}
+            
+            logger.info(f"Processing payment captured: ID={payment_id}")
+            
+            # Early return if invoice exists
+            existing_invoice = self._check_existing_invoice(payment_id, razorpay_invoice_id)
             if existing_invoice:
-                logger.info(f"Invoice already exists for excess consumption payment {payment_id}, skipping processing")
+                return {'status': 'success', 'message': 'Invoice already exists'}
+            
+            subscription_id = notes.get('subscription_id')
+            payment_type = notes.get('payment_type')
+            
+            # Specific handling for known payment types
+            if subscription_id and payment_type == 'excess_consumption':
+                return self._process_excess_consumption_payment(payment_id, subscription_id, payment_data)
+            
+            # ✅ KEEP THIS FALLBACK - Generic handling for any payment with subscription_id
+            if subscription_id:
+                logger.info(f"Creating invoice for subscription payment: {payment_id}, type: {payment_type or 'unknown'}")
+                invoice_id = self._create_simple_invoice(
+                    payment_id,
+                    razorpay_invoice_id,
+                    subscription_id,
+                    payment_amount,
+                    payment_currency,
+                    payment_method
+                )
+                
+                if invoice_id:
+                    return {
+                        'status': 'success',
+                        'message': f'Invoice created for {payment_type or "subscription"} payment',
+                        'invoice_id': invoice_id
+                    }
+            
+            # No subscription_id found
+            logger.info(f"Payment {payment_id} has no subscription context - subscription webhooks will handle")
+            return {
+                'status': 'success',
+                'message': 'Payment processed - subscription webhooks handle regular subscription invoices',
+                'payment_id': payment_id
+            }
+            
+        except Exception as e:
+            logger.error(f"Error handling payment captured: {str(e)}")
+            logger.error(traceback.format_exc())
+            return {'status': 'error', 'message': str(e)}
+
+    def _handle_razorpay_payment_link_paid(self, payload):
+        """Handle payment_link.paid webhook event - with specific handling + fallback"""
+        try:
+            payment_link_data = payload.get('payload', {}).get('payment_link', {}).get('entity', {})
+            payment_data = payload.get('payload', {}).get('payment', {}).get('entity', {})
+            
+            payment_id = payment_data.get('id')
+            payment_amount = payment_data.get('amount', 0) / 100  # Convert paisa to rupees
+            payment_currency = payment_data.get('currency', 'INR')
+            payment_method = payment_data.get('method')
+            razorpay_invoice_id = payment_data.get('invoice_id') or f'payment_link_{payment_id}'
+            
+            # Extract payment link notes
+            notes = payment_link_data.get('notes', {})
+            if isinstance(notes, list) or notes is None:
+                notes = {}
+            
+            logger.info(f"Processing payment link paid: ID={payment_id}")
+            
+            # Check if invoice already exists - EARLY RETURN
+            existing_invoice = self._check_existing_invoice(payment_id, razorpay_invoice_id)
+            if existing_invoice:
+                logger.info(f"Invoice already exists for payment {payment_id}, skipping creation")
                 return {
                     'status': 'success',
-                    'message': 'Excess consumption payment already processed',
-                    'already_processed': True,
+                    'message': 'Invoice already exists',
                     'invoice_id': existing_invoice['id']
                 }
             
-            # Process the payment (only if no existing invoice)
+            subscription_id = notes.get('subscription_id')
+            payment_type = notes.get('payment_type')
+            
+            # Specific handling for known payment types
+            if subscription_id and payment_type == 'excess_consumption':
+                return self._process_excess_consumption_payment(payment_id, subscription_id, payment_data)
+            
+            # Generic handling for any payment with subscription_id (fallback)
+            if subscription_id:
+                logger.info(f"Creating invoice for subscription payment link: {payment_id}, type: {payment_type or 'unknown'}")
+                invoice_id = self._create_simple_invoice(
+                    payment_id,
+                    razorpay_invoice_id,
+                    subscription_id,
+                    payment_amount,
+                    payment_currency,
+                    payment_method
+                )
+                
+                if invoice_id:
+                    return {
+                        'status': 'success',
+                        'message': f'Invoice created for {payment_type or "subscription"} payment link',
+                        'invoice_id': invoice_id
+                    }
+            
+            # No subscription_id - standalone payment link (invoices, bookings, etc.)
+            logger.info(f"Payment link {payment_id} is standalone - no subscription context")
+            return {
+                'status': 'success',
+                'message': 'Standalone payment link processed',
+                'payment_id': payment_id
+            }
+            
+        except Exception as e:
+            logger.error(f"Error handling payment link paid: {str(e)}")
+            logger.error(traceback.format_exc())
+            return {'status': 'error', 'message': str(e)}
+
+    def _process_excess_consumption_payment(self, payment_id, subscription_id, payment_data):
+        """Process excess consumption payment - simplified without duplicate checks"""
+        try:
+            # Process the payment directly (no need to check existing_invoice again)
             result = self.handle_additional_payment_completion(payment_id, subscription_id)
             
             # Create invoice to mark as processed
@@ -2910,185 +3023,7 @@ class PaymentService:
                 conn.close()
             return None
 
-    def _handle_razorpay_payment_captured(self, payload):
-        """Handle payment.captured webhook event"""
-        try:
-            payment_data = payload.get('payload', {}).get('payment', {}).get('entity', {})
-            
-            payment_id = payment_data.get('id')
-            payment_amount = payment_data.get('amount', 0) / 100  # Convert paisa to rupees
-            payment_currency = payment_data.get('currency', 'INR')
-            payment_method = payment_data.get('method')
-            razorpay_invoice_id = payment_data.get('invoice_id')
-            
-            # Extract payment notes
-            notes = payment_data.get('notes', {})
-            if isinstance(notes, list) or notes is None:
-                notes = {}
-            
-            logger.info(f"Processing payment captured: ID={payment_id}, Amount={payment_amount}, Method={payment_method}")
-            
-            # Check if invoice already exists
-            existing_invoice = self._check_existing_invoice(payment_id, razorpay_invoice_id)
-            
-            # Handle excess consumption payment
-            if notes.get('payment_type') == 'excess_consumption':
-                subscription_id = notes.get('subscription_id')
-                
-                if not subscription_id:
-                    logger.error("Missing subscription_id in payment notes")
-                    return {'status': 'error', 'message': 'Missing subscription ID'}
-                
-                return self._process_excess_consumption_payment(
-                    payment_id, 
-                    subscription_id, 
-                    payment_data, 
-                    existing_invoice
-                )
-            
-            # Handle regular payment (not excess consumption)
-            if existing_invoice:
-                logger.info(f"Invoice already exists for payment {payment_id}, skipping creation")
-                return {
-                    'status': 'success',
-                    'message': 'Invoice already exists',
-                    'invoice_id': existing_invoice['id']
-                }
-            
-            # Try to find subscription ID from different sources
-            subscription_id = notes.get('subscription_id')
-            
-            # Check if this is a subscription payment from Razorpay
-            subscription_id_from_payment = payment_data.get('subscription_id')
-            if subscription_id_from_payment and not subscription_id:
-                # Look up our internal subscription ID
-                conn = self.db.get_connection()
-                cursor = conn.cursor(dictionary=True)
-                cursor.execute("""
-                    SELECT id FROM user_subscriptions
-                    WHERE razorpay_subscription_id = %s
-                """, (subscription_id_from_payment,))
-                
-                sub_result = cursor.fetchone()
-                cursor.close()
-                conn.close()
-                
-                if sub_result:
-                    subscription_id = sub_result['id']
-                    logger.info(f"Found subscription ID {subscription_id} from Razorpay subscription {subscription_id_from_payment}")
-            
-            # Create invoice if we have a subscription ID
-            if subscription_id:
-                invoice_id = self._create_simple_invoice(
-                    payment_id,
-                    razorpay_invoice_id,
-                    subscription_id,
-                    payment_amount,
-                    payment_currency,
-                    payment_method
-                )
-                
-                if invoice_id:
-                    return {
-                        'status': 'success',
-                        'message': 'Invoice created',
-                        'invoice_id': invoice_id
-                    }
-            
-            # If we get here, we couldn't create an invoice due to missing subscription ID
-            logger.warning(f"Could not create invoice for payment {payment_id} - no subscription ID found")
-            
-            return {
-                'status': 'success',
-                'message': 'Payment processed but no invoice created - missing subscription ID',
-                'payment_id': payment_id
-            }
-            
-        except Exception as e:
-            logger.error(f"Error handling payment captured: {str(e)}")
-            logger.error(traceback.format_exc())
-            return {'status': 'error', 'message': str(e)}
 
-    def _handle_razorpay_payment_link_paid(self, payload):
-        """Handle payment_link.paid webhook event"""
-        try:
-            payment_link_data = payload.get('payload', {}).get('payment_link', {}).get('entity', {})
-            payment_data = payload.get('payload', {}).get('payment', {}).get('entity', {})
-            
-            payment_id = payment_data.get('id')
-            payment_amount = payment_data.get('amount', 0) / 100  # Convert paisa to rupees
-            payment_currency = payment_data.get('currency', 'INR')
-            payment_method = payment_data.get('method')
-            razorpay_invoice_id = payment_data.get('invoice_id')
-            
-            # Extract payment link notes
-            notes = payment_link_data.get('notes', {})
-            if isinstance(notes, list) or notes is None:
-                notes = {}
-            
-            logger.info(f"Processing payment link paid: ID={payment_id}, Amount={payment_amount}, Method={payment_method}")
-            
-            # Check if invoice already exists
-            existing_invoice = self._check_existing_invoice(payment_id, razorpay_invoice_id)
-            
-            # Handle excess consumption payment
-            if notes.get('payment_type') == 'excess_consumption':
-                subscription_id = notes.get('subscription_id')
-                
-                if not subscription_id:
-                    logger.error("Missing subscription_id in payment link notes")
-                    return {'status': 'error', 'message': 'Missing subscription ID'}
-                
-                return self._process_excess_consumption_payment(
-                    payment_id, 
-                    subscription_id, 
-                    payment_data, 
-                    existing_invoice
-                )
-            
-            # Handle regular payment (not excess consumption)
-            if existing_invoice:
-                logger.info(f"Invoice already exists for payment {payment_id}, skipping creation")
-                return {
-                    'status': 'success',
-                    'message': 'Invoice already exists',
-                    'invoice_id': existing_invoice['id']
-                }
-            
-            # Extract whatever information is available
-            subscription_id = notes.get('subscription_id')
-            
-            # Create invoice if we have a subscription ID
-            if subscription_id:
-                invoice_id = self._create_simple_invoice(
-                    payment_id,
-                    razorpay_invoice_id,
-                    subscription_id,
-                    payment_amount,
-                    payment_currency,
-                    payment_method
-                )
-                
-                if invoice_id:
-                    return {
-                        'status': 'success',
-                        'message': 'Invoice created for payment link',
-                        'invoice_id': invoice_id
-                    }
-            
-            # If we get here, we couldn't create an invoice due to missing details
-            logger.warning(f"Could not create invoice for payment link {payment_id} - missing subscription details")
-            
-            return {
-                'status': 'success',
-                'message': 'Payment link processed but no invoice created - missing details',
-                'payment_id': payment_id
-            }
-            
-        except Exception as e:
-            logger.error(f"Error handling payment link paid: {str(e)}")
-            logger.error(traceback.format_exc())
-            return {'status': 'error', 'message': str(e)}
         
     def _get_subscription_payment_method(self, subscription):
         """Detect payment method from database records and metadata"""
@@ -4006,10 +3941,6 @@ class PaymentService:
     def handle_additional_payment_completion(self, payment_id, subscription_id):
         """Handle completion of additional payment for USD annual upgrade"""
         try:
-            payment_status = self.razorpay.client.payment.fetch(payment_id)
-            
-            if payment_status.get('status') != 'captured':
-                return {'error': True, 'message': 'Payment not completed'}
             
             subscription = self._get_subscription_details(subscription_id)
             if not subscription:
