@@ -5,7 +5,7 @@ import json
 import logging
 import traceback
 import os
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 
 from .db import DatabaseManager
 from .providers.razorpay_provider import RazorpayProvider
@@ -967,7 +967,7 @@ class PaymentService:
         if start_at:
             try:
                 start_timestamp = int(start_at)
-                start_date = datetime.fromtimestamp(start_timestamp)
+                start_date = datetime.fromtimestamp(start_timestamp, tz=timezone.utc)
             except (ValueError, TypeError):
                logger.error(f"Invalid start_at value: {start_at}")
                # Continue with current date as fallback
