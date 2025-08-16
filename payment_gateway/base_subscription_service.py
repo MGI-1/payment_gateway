@@ -331,13 +331,13 @@ class BaseSubscriptionService:
             free_features = parse_json_field(free_plan.get('features', '{}'))
             
             if app_id == 'marketfit':
-                temp_doc_pages = free_features.get('document_pages', 50) * 2
-                temp_perplexity = free_features.get('perplexity_requests', 20) * 2
+                temp_doc_pages = free_features.get('document_pages', 40) * 2
+                temp_perplexity = free_features.get('perplexity_requests', 2) * 2
                 temp_requests = 0
             else:  # saleswit
                 temp_doc_pages = 0
                 temp_perplexity = 0
-                temp_requests = free_features.get('requests', 20) * 2
+                temp_requests = free_features.get('requests', 2) * 2
             
             conn = self.db.get_connection()
             cursor = conn.cursor()
