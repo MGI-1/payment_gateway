@@ -400,7 +400,7 @@ class BaseSubscriptionService:
         time_remaining_pct = billing_cycle_info['time_factor']
         resource_remaining_pct = 1 - resource_info['base_plan_consumed_pct']
         value_remaining_pct = min(time_remaining_pct, resource_remaining_pct)
-        return max(0.0, value_remaining_pct)
+        return round(max(0.0, value_remaining_pct), 6)  # 6 decimal places for percentage precision
     
     def get_available_plans(self, app_id='marketfit'):
         """
