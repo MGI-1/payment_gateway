@@ -94,6 +94,15 @@ WEBHOOK_BASE_URL = get_api_base_url()
 
 # ADD these new environment variables
 PAYPAL_WEBHOOK_ID = os.getenv('PAYPAL_WEBHOOK_ID', '')
+
 # PayPal return URLs
-PAYPAL_RETURN_URL = f"{WEBHOOK_BASE_URL}/api/subscriptions/paypal-success"
-PAYPAL_CANCEL_URL = f"{WEBHOOK_BASE_URL}/api/subscriptions/paypal-cancel"
+def get_frontend_base_url():
+    """Get frontend base URL based on environment"""
+    if FLASK_ENV == 'development':
+        return 'http://localhost:5173'  # React dev server
+    else:
+        # For production, frontend and backend are same domain
+        return get_api_base_url()
+
+PAYPAL_RETURN_URL = f"{get_frontend_base_url()}/subscription-success"
+PAYPAL_CANCEL_URL = f"{get_frontend_base_url()}/subscription-cancel"
