@@ -7,7 +7,7 @@ import hmac
 import hashlib
 import base64
 import requests
-from flask import request, current_app
+from flask import request, current_app, jsonify
 from ..paypal_service import paypal_service
 from ..config import PAYPAL_WEBHOOK_ID, FLASK_ENV
 
@@ -195,7 +195,7 @@ def _verify_rsa_signature(certificate, message, signature):
 
 def handle_paypal_webhook():
     """
-    Handle PayPal webhook events using PayPalService
+    Handle PayPal webhook events using PayPal service
     
     Returns:
         tuple: Response object and status code
@@ -208,12 +208,13 @@ def handle_paypal_webhook():
         if webhook_signature:
             if not verify_paypal_webhook_signature(request.headers, payload):
                 logger.warning("Invalid PayPal webhook signature")
-                return {'error': 'Invalid signature'}, 400
+                # Return 200 to prevent retries, but log the issue
+                return jsonify({'error': 'Invalid signature'}), 200
         else:
             logger.warning("No PayPal webhook signature provided")
             # In development, might continue without signature
             if FLASK_ENV != 'development':
-                return {'error': 'Missing signature'}, 400
+                return jsonify({'error': 'Missing signature'}), 200
         
         # Parse the webhook payload
         webhook_data = request.json
@@ -222,12 +223,12 @@ def handle_paypal_webhook():
         
         logger.info(f"Processing PayPal webhook: {event_type}, ID: {event_id}")
         
-        # Check idempotency using PayPal service
+        # Check idempotency using PayPal service (your existing code)
         if paypal_service.db.is_event_processed(event_id, 'paypal'):
             logger.info(f"PayPal event {event_id} already processed")
-            return {'status': 'already_processed'}, 200
+            return jsonify({'status': 'already_processed'}), 200
         
-        # Process using PayPal service
+        # Process using PayPal service (your existing code)
         result = paypal_service.process_webhook_event(
             provider='paypal',
             event_type=event_type,
@@ -235,16 +236,17 @@ def handle_paypal_webhook():
             payload=webhook_data
         )
         
-        return {
-            'status': 'success' if result.get('success') else 'error',
+        # ALWAYS return 200 with jsonify() - this is the key fix
+        return jsonify({
+            'status': 'success' if result.get('success') else 'processed',
             'message': result.get('message', f'Processed {event_type} event'),
             'event_type': event_type
-        }, 200 if result.get('success') else 500
+        }), 200
         
     except json.JSONDecodeError as e:
         logger.error(f"Invalid JSON in PayPal webhook: {str(e)}")
-        return {'error': 'Invalid JSON payload'}, 400
+        return jsonify({'error': 'Invalid JSON payload'}), 200  # Return 200, not 400
     except Exception as e:
         logger.error(f"Error handling PayPal webhook: {str(e)}")
         logger.error(f"Request data: {request.data}")
-        return {'error': str(e)}, 500
+        return jsonify({'error': str(e)}), 200  # Return 200, not 500
