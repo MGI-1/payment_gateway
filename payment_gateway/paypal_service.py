@@ -757,7 +757,7 @@ class PayPalService(BaseSubscriptionService):
         try:
             # Calculate proration amount and messaging
             value_remaining_pct = self._calculate_value_remaining_percentage(billing_cycle_info, resource_info)
-            remaining_period_value = value_remaining_pct * self._ensure_float(new_plan['amount'])
+            remaining_period_value = round(value_remaining_pct * self._ensure_float(new_plan['amount']), 2)
             
             time_remaining = billing_cycle_info['time_factor'] * 100
             resource_remaining = (1 - resource_info['base_plan_consumed_pct']) * 100
@@ -1187,7 +1187,7 @@ class PayPalService(BaseSubscriptionService):
         """Create one-time PayPal payment for proration"""
         try:
             payment_data = {
-                'amount': amount,
+                'amount': round(float(amount), 2),
                 'currency': 'USD',
                 'description': description,
                 'customer_info': {
@@ -1205,6 +1205,7 @@ class PayPalService(BaseSubscriptionService):
         except Exception as e:
             logger.error(f"Error creating PayPal one-time payment: {str(e)}")
             return {'error': True, 'message': str(e)}
+
 
     def _store_pending_upgrade(self, subscription_id, new_plan_id, order_id):
         """Store pending upgrade details"""

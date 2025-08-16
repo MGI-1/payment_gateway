@@ -424,7 +424,7 @@ class PayPalProvider:
                 "purchase_units": [{
                     "amount": {
                         "currency_code": payment_data.get('currency', 'USD'),
-                        "value": str(payment_data['amount'])
+                        "value": str(round(float(payment_data['amount']), 2)) 
                     },
                     "description": payment_data.get('description', 'Upgrade proration payment'),
                     "custom_id": f"sub_{payment_data.get('metadata', {}).get('subscription_id')}"
