@@ -62,7 +62,7 @@ class PaymentService(BaseSubscriptionService):
 
         try:
             # Phase 1: Get required data (separate connections)
-            plan = self._get_plan_for_app(plan_id, app_id)
+            plan = self._get_plan(plan_id)
             if not plan:
                 raise ValueError(f"Plan with ID {plan_id} not found")
             

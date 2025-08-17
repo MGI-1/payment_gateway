@@ -36,12 +36,14 @@ class BaseSubscriptionService:
 
     def _get_plan(self, plan_id):
         """Get plan details with isolated connection"""
-        logger.error(f"in_get_plan")
         try:
             conn = self.db.get_connection()
             cursor = conn.cursor(dictionary=True)
             
-            cursor.execute(f"SELECT * FROM {DB_TABLE_SUBSCRIPTION_PLANS} WHERE id = %s", (plan_id,))
+            cursor.execute(
+                f"SELECT * FROM {DB_TABLE_SUBSCRIPTION_PLANS} WHERE razorpay_plan_id = %s OR paypal_plan_id = %s",
+                (plan_id, plan_id)
+            )
             plan = cursor.fetchone()
             
             cursor.close()
