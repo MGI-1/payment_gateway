@@ -1,25 +1,35 @@
 """
 Flask routes for payment gateway integration
 """
+from .service import payment_service
+from .paypal_service import paypal_service
+from .utils.helpers import calculate_billing_cycle_info, calculate_resource_utilization
 from flask import Blueprint, request, jsonify, current_app,redirect
 import logging
 import traceback
-
 from .webhooks.razorpay_handler import handle_razorpay_webhook, verify_razorpay_signature
 from .webhooks.paypal_handler import handle_paypal_webhook
 
 logger = logging.getLogger('payment_gateway')
 
-def init_payment_routes(app, payment_service):
+def init_payment_routes(app, payment_service, paypal_service=None):
     """
     Initialize payment routes with a Flask app
     
     Args:
         app: Flask application
         payment_service: PaymentService instance
+        paypal_service: PayPalService instance (optional for backward compatibility)
     """
     # Create a Blueprint for subscription-related routes
     payment_bp = Blueprint('payment_gateway', __name__, url_prefix='/api/subscriptions')
+    
+    # Ensure PayPal service is available
+    if paypal_service is None:
+        paypal_service = getattr(payment_service, 'paypal_service', None)
+        if paypal_service is None:
+            from .paypal_service import PayPalService
+            paypal_service = PayPalService(app)
     
     @payment_bp.route('/plans', methods=['GET'])
     def get_plans():
@@ -66,19 +76,30 @@ def init_payment_routes(app, payment_service):
 
     @payment_bp.route('/cancel/<subscription_id>', methods=['POST'])
     def cancel_subscription(subscription_id):
-        """Cancel a subscription"""
+        """Cancel subscription with gateway detection"""
         try:
             data = request.json
             user_id = data.get('user_id')
             
             if not user_id:
                 return jsonify({'error': 'User ID is required'}), 400
-                
-            result = payment_service.cancel_subscription(user_id, subscription_id)
+            
+            # Get subscription to determine gateway
+            subscription = payment_service._get_subscription_details(subscription_id)
+            
+            if subscription.get('paypal_subscription_id'):
+                # Use PayPal service for PayPal subscriptions
+                result = paypal_service.cancel_subscription(user_id, subscription_id)
+            elif subscription.get('razorpay_subscription_id'):
+                # Use main payment service for Razorpay
+                result = payment_service.cancel_subscription(user_id, subscription_id)
+            else:
+                return jsonify({'error': 'No gateway subscription found'}), 400
+            
             return jsonify({'result': result})
+            
         except Exception as e:
             logger.error(f"Error cancelling subscription: {str(e)}")
-            logger.error(traceback.format_exc())
             return jsonify({'error': str(e)}), 500
 
     @payment_bp.route('/razorpay-webhook', methods=['POST'])
@@ -90,10 +111,11 @@ def init_payment_routes(app, payment_service):
 
     @payment_bp.route('/paypal-webhook', methods=['POST'])
     def paypal_webhook():
-        """Handle PayPal webhook events"""
+        """Handle PayPal webhook events using PayPal service"""
         logger.info("Received PayPal webhook")
-        result, status_code = handle_paypal_webhook(payment_service)
+        result, status_code = handle_paypal_webhook()  # Uses paypal_service internally
         return jsonify(result), status_code
+
 
     @payment_bp.route('/verify-payment', methods=['POST'])
     def verify_payment():
@@ -317,18 +339,19 @@ def init_payment_routes(app, payment_service):
 
     @payment_bp.route('/create-paypal', methods=['POST'])
     def create_paypal_subscription():
-        """Create PayPal subscription using backend API"""
+        """Create PayPal subscription using PayPal service"""
         try:
             data = request.json
             user_id = data.get('user_id')
             plan_id = data.get('plan_id')
             app_id = data.get('app_id', 'marketfit')
-            customer_info = data.get('customer_info')  # Optional
+            customer_info = data.get('customer_info')
             
             if not all([user_id, plan_id]):
                 return jsonify({'error': 'User ID and plan ID are required'}), 400
             
-            result = payment_service.create_paypal_subscription(
+            # Use PayPal service instead of main payment service
+            result = paypal_service.create_subscription(
                 user_id, plan_id, app_id, customer_info
             )
             
@@ -347,8 +370,8 @@ def init_payment_routes(app, payment_service):
             if not subscription_id:
                 return jsonify({'error': 'Missing subscription ID'}), 400
             
-            # Activate the subscription
-            result = payment_service.activate_paypal_subscription(subscription_id)
+            # Use PayPal service for activation
+            result = paypal_service.activate_subscription(subscription_id)
             
             # Redirect to success page
             return redirect(f"/subscription-success?subscription_id={subscription_id}")
@@ -364,67 +387,29 @@ def init_payment_routes(app, payment_service):
             subscription_id = request.args.get('subscription_id')
             
             if subscription_id:
-                # Mark subscription as cancelled
-                payment_service.cancel_pending_paypal_subscription(subscription_id)
+                # Use PayPal service for cancellation
+                paypal_service.cancel_pending_subscription(subscription_id)
             
-            # Redirect to cancellation page
             return redirect("/subscription-cancelled")
             
         except Exception as e:
             logger.error(f"Error handling PayPal cancel: {str(e)}")
             return redirect("/subscription-error")
 
-    @payment_bp.route('/upgrade', methods=['POST'])
-    def upgrade_subscription():
-        """Upgrade a subscription to a higher plan"""
-        try:
-            logger.info("[UPGRADE] Route started")
-            data = request.json
-            user_id = data.get('user_id')
-            subscription_id = data.get('subscription_id')
-            new_plan_id = data.get('new_plan_id')
-            app_id = data.get('app_id', 'marketfit')
-            
-            logger.info(f"[UPGRADE3] Params: user={user_id}, sub={subscription_id}, plan={new_plan_id}")
-            
-            if not all([user_id, subscription_id, new_plan_id]):
-                logger.info("[UPGRADE] Missing required parameters")
-                return jsonify({'error': 'User ID, subscription ID, and new plan ID are required'}), 400
-            
-            logger.info("[UPGRADE] Calling payment_service.upgrade_subscription")
-            result = payment_service.upgrade_subscription(user_id, subscription_id, new_plan_id, app_id)
-            logger.info("[UPGRADE] Payment service returned successfully")
-            
-            # Check if it's a UPI limitation error
-            if result.get('error_type') == 'upi_upgrade_not_supported':
-                return jsonify({
-                    'error': 'UPI upgrade not supported',
-                    'error_type': 'upi_upgrade_not_supported',
-                    'message': result.get('message')
-                }), 422  # Use 422 for business logic errors
-            
-            return jsonify({'result': result})
-            
-        except Exception as e:
-            logger.info(f"[UPGRADE] Route exception: {str(e)}")
-            return jsonify({'error': str(e)}), 500
-
     @payment_bp.route('/payment-callback', methods=['GET', 'POST'])
     def payment_callback():
-        """Unified payment completion callback handler"""
+        """Handle PayPal proration completion"""
         try:
             if request.method == 'GET':
-                # PayPal return URLs
                 payment_type = request.args.get('type')
                 token = request.args.get('token')
                 
                 if payment_type == 'proration' and token:
-                    result = payment_service.handle_paypal_proration_completion(token)
+                    # Use PayPal service for proration completion
+                    result = paypal_service.handle_proration_completion(token)
                     if result.get('success'):
-                        # Redirect to dashboard with success message
                         return redirect('/subscription-dashboard?upgrade=success&message=Your subscription has been upgraded successfully! Proration payment completed.')
                     else:
-                        # Redirect to dashboard with error message  
                         return redirect('/subscription-dashboard?upgrade=error&message=There was an issue processing your upgrade payment. Please contact support.')
                 
                 return redirect('/subscription-dashboard')
@@ -437,13 +422,84 @@ def init_payment_routes(app, payment_service):
                 if event_type in ['payment.captured', 'payment_link.paid']:
                     return handle_razorpay_webhook(payment_service)
                 elif event_type == 'PAYMENT.CAPTURE.COMPLETED':
-                    return handle_paypal_webhook(payment_service)
+                    return handle_paypal_webhook()
                 else:
                     return jsonify({'status': 'unhandled_event', 'event': event_type})
             
         except Exception as e:
             logger.error(f"Error in payment callback: {str(e)}")
             return redirect('/subscription-dashboard?upgrade=error&message=Payment processing failed. Please contact support.')
+
+    @payment_bp.route('/upgrade', methods=['POST'])
+    def upgrade_subscription():
+        """Handle upgrade with gateway detection"""
+        try:
+            logger.info("[UPGRADE] Route started")
+            data = request.json
+            user_id = data.get('user_id')
+            subscription_id = data.get('subscription_id')
+            new_plan_id = data.get('new_plan_id')
+            app_id = data.get('app_id', 'marketfit')
+            
+            logger.info(f"[UPGRADE] Params: user={user_id}, sub={subscription_id}, plan={new_plan_id}")
+            
+            if not all([user_id, subscription_id, new_plan_id]):
+                logger.info("[UPGRADE] Missing required parameters")
+                return jsonify({'error': 'User ID, subscription ID, and new plan ID are required'}), 400
+            
+            # Get new plan to determine gateway (use main service for plan lookup)
+            new_plan = payment_service._get_plan(new_plan_id)
+            currency, gateway = payment_service._get_currency_and_gateway_from_plan(new_plan)
+            
+            logger.info(f"[UPGRADE] Currency: {currency}, Gateway: {gateway}")
+            
+            if gateway == 'paypal':
+                # Get usage data for PayPal upgrade
+                usage_data = paypal_service.get_current_usage(user_id, subscription_id, app_id)
+                if not usage_data:
+                    raise ValueError("Usage data not found")
+
+                # Get current plan for resource calculation
+                current_subscription = paypal_service._get_subscription_details(subscription_id)
+                current_plan = paypal_service._get_plan(current_subscription['plan_id'])
+
+                billing_cycle_info = calculate_billing_cycle_info(
+                    usage_data['billing_period_start'],
+                    usage_data['billing_period_end']
+                )
+
+                resource_info = calculate_resource_utilization(
+                    usage_data,
+                    current_plan['features'],
+                    app_id
+                )
+                
+                # Use PayPal service for upgrade
+                logger.info("[UPGRADE] Calling paypal_service.handle_upgrade")
+                result = paypal_service.handle_upgrade(
+                    user_id, subscription_id, new_plan_id, app_id, 
+                    billing_cycle_info, resource_info
+                )
+                logger.info("[UPGRADE] PayPal service returned successfully")
+            else:
+                # Use main payment service for Razorpay
+                logger.info("[UPGRADE] Calling payment_service.upgrade_subscription")
+                result = payment_service.upgrade_subscription(user_id, subscription_id, new_plan_id, app_id)
+                logger.info("[UPGRADE] Payment service returned successfully")
+            
+            # Check if it's a UPI limitation error
+            if result.get('error_type') == 'upi_upgrade_not_supported':
+                return jsonify({
+                    'error': 'UPI upgrade not supported',
+                    'error_type': 'upi_upgrade_not_supported',
+                    'message': result.get('message')
+                }), 422
+            
+            return jsonify({'result': result})
+            
+        except Exception as e:
+            logger.error(f"[UPGRADE] Route exception: {str(e)}")
+            return jsonify({'error': str(e)}), 500
 
     @payment_bp.route('/downgrade-request', methods=['POST'])
     def request_downgrade():
