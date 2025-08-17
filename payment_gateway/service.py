@@ -62,7 +62,7 @@ class PaymentService(BaseSubscriptionService):
 
         try:
             # Phase 1: Get required data (separate connections)
-            plan = self._get_plan(plan_id)
+            plan = self._get_plan_for_app(plan_id, app_id)
             if not plan:
                 raise ValueError(f"Plan with ID {plan_id} not found")
             
@@ -296,8 +296,8 @@ class PaymentService(BaseSubscriptionService):
             
             cursor.execute(f"""
                 SELECT * FROM {DB_TABLE_SUBSCRIPTION_PLANS}
-                WHERE id = %s AND app_id = %s
-            """, (plan_id, app_id))
+                WHERE razorpay_plan_id = %s OR paypal_plan_id = %s" AND app_id = %s
+            """, (plan_id, plan_id, app_id))
             
             plan = cursor.fetchone()
             
