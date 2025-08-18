@@ -185,7 +185,8 @@ class RazorpayProvider:
                     'email': True
                 },
                 'notes': invoice_data.get('notes', {}),
-                'callback_url': f"{WEBHOOK_BASE_URL}/api/subscriptions/payment-callback",
+                # UPDATED: Use dedicated Razorpay callback endpoint
+                'callback_url': f"{WEBHOOK_BASE_URL}/api/subscriptions/razorpay-payment-complete",
                 'callback_method': 'get'
             }
             
@@ -201,8 +202,8 @@ class RazorpayProvider:
             
         except Exception as e:
             logger.error(f"Error creating Razorpay payment link: {str(e)}")
-            return {'error': True, 'message': str(e)}    
-    
+            return {'error': True, 'message': str(e)}
+        
     
     # In razorpay_provider.py, enhance the cancel_subscription method
     def cancel_subscription(self, subscription_id, cancel_at_cycle_end=True):
