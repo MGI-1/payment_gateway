@@ -36,7 +36,6 @@ class BaseSubscriptionService:
 
     def _get_plan(self, plan_id):
         """Get plan details with isolated connection"""
-        logger.error(f"in_get_plan")
         try:
             conn = self.db.get_connection()
             cursor = conn.cursor(dictionary=True)
@@ -119,6 +118,65 @@ class BaseSubscriptionService:
             logger.error(f"Error getting subscription for cancellation: {str(e)}")
             raise
 
+    def _clear_upgrade_pending_metadata(self, subscription_id):
+        """Clear upgrade pending metadata (for cancellations)"""
+        try:
+            conn = self.db.get_connection()
+            cursor = conn.cursor()
+            
+            cursor.execute(f"""
+                UPDATE {DB_TABLE_USER_SUBSCRIPTIONS}
+                SET metadata = JSON_REMOVE(
+                    IFNULL(metadata, '{{}}'), 
+                    '$.upgrade_pending_approval',
+                    '$.pending_plan_id',
+                    '$.upgrade_initiated_at',
+                    '$.upgrade_type'
+                ),
+                updated_at = NOW()
+                WHERE id = %s
+            """, (subscription_id,))
+            
+            conn.commit()
+            cursor.close()
+            conn.close()
+            
+            logger.info(f"Cleared upgrade pending metadata for subscription {subscription_id}")
+            
+        except Exception as e:
+            logger.error(f"Error clearing upgrade pending metadata: {str(e)}")
+            raise
+
+    def _set_upgrade_pending_metadata(self, subscription_id, new_plan_id):
+        """Set metadata for upgrade pending approval"""
+        try:
+            upgrade_metadata = {
+                'upgrade_pending_approval': True,
+                'pending_plan_id': new_plan_id,
+                'upgrade_initiated_at': datetime.now().isoformat(),
+                'upgrade_type': 'paypal_simple_pending'
+            }
+            
+            conn = self.db.get_connection()
+            cursor = conn.cursor()
+            
+            cursor.execute(f"""
+                UPDATE {DB_TABLE_USER_SUBSCRIPTIONS}
+                SET metadata = JSON_MERGE_PATCH(IFNULL(metadata, '{{}}'), %s),
+                    updated_at = NOW()
+                WHERE id = %s
+            """, (json.dumps(upgrade_metadata), subscription_id))
+            
+            conn.commit()
+            cursor.close()
+            conn.close()
+            
+            logger.info(f"Set pending approval metadata for subscription {subscription_id} to plan {new_plan_id}")
+            
+        except Exception as e:
+            logger.error(f"Error setting upgrade pending metadata: {str(e)}")
+            raise
+
     def _update_subscription_plan(self, subscription_id, new_plan_id):
         """Update subscription plan in database"""
         try:
@@ -138,7 +196,61 @@ class BaseSubscriptionService:
         except Exception as e:
             logger.error(f"Error updating subscription plan: {str(e)}")
             raise
+    
+    def _clear_simple_upgrade_metadata(self, subscription_id):
+        """Clear simple upgrade metadata after completion"""
+        try:
+            conn = self.db.get_connection()
+            cursor = conn.cursor()
+            
+            cursor.execute(f"""
+                UPDATE {DB_TABLE_USER_SUBSCRIPTIONS}
+                SET metadata = JSON_REMOVE(
+                    IFNULL(metadata, '{{}}'), 
+                    '$.simple_upgrade_pending',
+                    '$.upgraded_to_plan',
+                    '$.upgrade_timestamp',
+                    '$.upgrade_type',
+                    '$.temporary_resources_added'
+                ),
+                updated_at = NOW()
+                WHERE id = %s
+            """, (subscription_id,))
+            
+            conn.commit()
+            cursor.close()
+            conn.close()
+            
+            logger.info(f"Cleared simple upgrade metadata for subscription {subscription_id}")
+            
+        except Exception as e:
+            logger.error(f"Error clearing simple upgrade metadata: {str(e)}")
+            raise
 
+    def _update_subscription_plan_and_metadata(self, subscription_id, new_plan_id, upgrade_metadata):
+        """Update subscription plan and metadata in single atomic operation"""
+        try:
+            conn = self.db.get_connection()
+            cursor = conn.cursor(dictionary=True)
+            
+            cursor.execute(f"""
+                UPDATE {DB_TABLE_USER_SUBSCRIPTIONS}
+                SET plan_id = %s,
+                    metadata = JSON_MERGE_PATCH(IFNULL(metadata, '{{}}'), %s),
+                    updated_at = NOW()
+                WHERE id = %s
+            """, (new_plan_id, json.dumps(upgrade_metadata), subscription_id))
+            
+            conn.commit()
+            cursor.close()
+            conn.close()
+            
+            logger.info(f"Updated subscription {subscription_id} to plan {new_plan_id} with upgrade metadata")
+            
+        except Exception as e:
+            logger.error(f"Error updating subscription plan and metadata: {str(e)}")
+            raise
+        
     def _get_subscription_with_features(self, subscription_id):
         """Get subscription with features using isolated connection"""
         try:

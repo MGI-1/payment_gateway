@@ -10,7 +10,7 @@ import base64
 from datetime import datetime, timedelta
 from ..config import (
     PAYPAL_CLIENT_ID, PAYPAL_CLIENT_SECRET, PAYPAL_BASE_URL,
-    PAYPAL_RETURN_URL, PAYPAL_CANCEL_URL, FLASK_ENV
+    PAYPAL_RETURN_URL, PAYPAL_CANCEL_URL, FLASK_ENV, WEBHOOK_BASE_URL
 )
 from ..utils.helpers import generate_id
 
@@ -266,72 +266,7 @@ class PayPalProvider:
         
         logger.info(f"Fetching PayPal subscription: {subscription_id}")
         return self._make_api_call(f"/v1/billing/subscriptions/{subscription_id}")
-    
-    def update_subscription(self, subscription_id, new_plan_id, proration_amount=None):
-        """
-        Update PayPal subscription to new plan with proration
-        
-        Args:
-            subscription_id: PayPal subscription ID
-            new_plan_id: New PayPal plan ID to switch to
-            proration_amount: Amount to charge/refund for proration
-            
-        Returns:
-            dict: Update result
-        """
-        if not self.initialized:
-            return {'error': True, 'message': 'PayPal not initialized'}
-        
-        try:
-            logger.info(f"Updating PayPal subscription {subscription_id} to plan {new_plan_id}")
-            
-            # Prepare revision data
-            revision_data = {
-                "plan_id": new_plan_id,
-                "application_context": {
-                    "user_action": "SUBSCRIBE_NOW",
-                    "return_url": PAYPAL_RETURN_URL,
-                    "cancel_url": PAYPAL_CANCEL_URL
-                }
-            }
-            
-            # Add proration if specified
-            if proration_amount and proration_amount > 0:
-                revision_data["proration"] = {
-                    "prorate": True,
-                    "outstanding_balance": {
-                        "currency_code": "USD",  # You may want to make this configurable
-                        "value": str(proration_amount)
-                    }
-                }
-            
-            # Call PayPal revision API
-            result = self._make_api_call(
-                f"/v1/billing/subscriptions/{subscription_id}/revise",
-                method="POST",
-                data=revision_data
-            )
-            
-            if result.get('error'):
-                return result
-            
-            # PayPal subscription revision was successful
-            logger.info(f"PayPal subscription {subscription_id} updated successfully")
-            
-            return {
-                'success': True,
-                'subscription_id': subscription_id,
-                'new_plan_id': new_plan_id,
-                'proration_amount': proration_amount,
-                'paypal_response': result,
-                'approval_url': self._extract_approval_url(result),
-                'message': 'Subscription updated successfully'
-            }
-            
-        except Exception as e:
-            logger.error(f"Error updating PayPal subscription: {str(e)}")
-            return {'error': True, 'message': str(e)}
-    
+   
     def cancel_subscription(self, subscription_id, reason="User requested cancellation"):
         """Cancel PayPal subscription"""
         if not self.initialized:
@@ -424,14 +359,15 @@ class PayPalProvider:
                 "purchase_units": [{
                     "amount": {
                         "currency_code": payment_data.get('currency', 'USD'),
-                        "value": str(round(float(payment_data['amount']), 2)) 
+                        "value": str(payment_data['amount'])
                     },
                     "description": payment_data.get('description', 'Upgrade proration payment'),
                     "custom_id": f"sub_{payment_data.get('metadata', {}).get('subscription_id')}"
                 }],
                 "application_context": {
-                    "return_url": f"{PAYPAL_RETURN_URL}?type=proration",
-                    "cancel_url": f"{PAYPAL_CANCEL_URL}?type=proration"
+                    # UPDATED: Use dedicated PayPal proration endpoints
+                    "return_url": f"{WEBHOOK_BASE_URL}/api/subscriptions/paypal-proration-complete?type=proration",
+                    "cancel_url": f"{WEBHOOK_BASE_URL}/api/subscriptions/paypal-proration-cancel?type=proration"
                 }
             }
             
