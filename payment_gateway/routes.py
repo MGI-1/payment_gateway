@@ -633,10 +633,26 @@ def init_payment_routes(app, payment_service, paypal_service=None):
                 result = payment_service.upgrade_subscription(user_id, subscription_id, new_plan_id, app_id)
                 logger.info("[UPGRADE] Payment service returned successfully")
             
+            # ✅ ADD COMPREHENSIVE RESULT LOGGING
+            logger.info("=== UPGRADE ROUTE RESPONSE DEBUG ===")
+            logger.info(f"Route result type: {type(result)}")
+            logger.info(f"Route result keys: {list(result.keys()) if isinstance(result, dict) else 'Not a dict'}")
+            logger.info(f"Route result success: {result.get('success') if isinstance(result, dict) else 'N/A'}")
+            logger.info(f"Route result requires_approval: {result.get('requires_approval') if isinstance(result, dict) else 'N/A'}")
+            logger.info(f"Route result approval_url: {result.get('approval_url') if isinstance(result, dict) else 'N/A'}")
+            logger.info(f"Route result upgrade_type: {result.get('upgrade_type') if isinstance(result, dict) else 'N/A'}")
+            logger.info(f"Route result message: {result.get('message') if isinstance(result, dict) else 'N/A'}")
+            logger.info(f"Full route result: {json.dumps(result, indent=2, default=str)}")
+            logger.info("=====================================")
+            
             return jsonify({'result': result})
             
         except Exception as e:
             logger.error(f"[UPGRADE] Route exception: {str(e)}")
+            logger.error(f"[UPGRADE] Exception type: {type(e)}")
+            logger.error(f"[UPGRADE] Exception args: {e.args}")
+            import traceback
+            logger.error(f"[UPGRADE] Traceback: {traceback.format_exc()}")
             return jsonify({'error': str(e)}), 500
         
     @payment_bp.route('/downgrade-request', methods=['POST'])

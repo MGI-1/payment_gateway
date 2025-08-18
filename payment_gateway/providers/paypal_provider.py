@@ -305,6 +305,8 @@ class PayPalProvider:
             return {'error': True, 'message': 'PayPal not initialized'}
         
         try:
+            logger.info(f"[PAYPAL PROVIDER] Starting plan update for subscription {subscription_id} to plan {new_plan_id}")
+            
             revision_data = {
                 "plan_id": new_plan_id,
                 "application_context": {
@@ -314,17 +316,35 @@ class PayPalProvider:
                 }
             }
             
+            logger.info(f"[PAYPAL PROVIDER] Revision data: {json.dumps(revision_data, indent=2)}")
+            
             result = self._make_api_call(
                 f"/v1/billing/subscriptions/{subscription_id}/revise",
                 method="POST",
                 data=revision_data
             )
             
+            # ✅ ADD COMPREHENSIVE PAYPAL API RESPONSE LOGGING
+            logger.info("=== PAYPAL PROVIDER DEBUG ===")
+            logger.info(f"PayPal API raw response: {json.dumps(result, indent=2, default=str)}")
+            logger.info(f"PayPal API response type: {type(result)}")
+            logger.info(f"PayPal API response keys: {list(result.keys()) if isinstance(result, dict) else 'Not a dict'}")
+            logger.info(f"PayPal API error flag: {result.get('error') if isinstance(result, dict) else 'N/A'}")
+            
             if result.get('error'):
+                logger.error(f"PayPal API returned error: {result}")
                 return result
             
+            # Extract approval URL
             approval_url = self._extract_approval_url(result)
             status = result.get('status', '')
+            
+            # ✅ ADD EXTRACTION RESULT LOGGING
+            logger.info(f"Extracted approval_url: {approval_url}")
+            logger.info(f"Approval URL type: {type(approval_url)}")
+            logger.info(f"PayPal status: {status}")
+            logger.info(f"Links in PayPal response: {result.get('links', 'No links found')}")
+            logger.info("=============================")
             
             approval_reason = None
             if approval_url:
@@ -335,17 +355,25 @@ class PayPalProvider:
                 else:
                     approval_reason = "Additional authorization required"
             
-            return {
+            final_result = {
                 'success': True,
                 'requires_approval': approval_url is not None,
                 'approval_url': approval_url,
                 'approval_reason': approval_reason,
                 'status': status,
-                'message': f'Plan updated. {approval_reason}' if approval_url else 'Plan updated successfully.'
+                'message': f'Plan updated. {approval_reason}' if approval_url else 'Plan updated successfully.',
+                'paypal_raw_response': result  # Include raw response for debugging
             }
+            
+            logger.info(f"[PAYPAL PROVIDER] Final result: {json.dumps(final_result, indent=2, default=str)}")
+            
+            return final_result
             
         except Exception as e:
             logger.error(f"Error updating PayPal subscription plan: {str(e)}")
+            logger.error(f"Exception type: {type(e)}")
+            import traceback
+            logger.error(f"Traceback: {traceback.format_exc()}")
             return {'error': True, 'message': str(e)}
 
     def create_one_time_payment(self, payment_data):
@@ -411,11 +439,43 @@ class PayPalProvider:
     
     def _extract_approval_url(self, paypal_response):
         """Extract approval URL from PayPal response if present"""
+        logger.info("=== APPROVAL URL EXTRACTION DEBUG ===")
+        logger.info(f"Input paypal_response type: {type(paypal_response)}")
+        logger.info(f"Input paypal_response keys: {list(paypal_response.keys()) if isinstance(paypal_response, dict) else 'Not a dict'}")
+        
         try:
             links = paypal_response.get('links', [])
-            for link in links:
-                if link.get('rel') == 'approve':
-                    return link.get('href')
+            logger.info(f"Links found: {len(links)} items")
+            logger.info(f"Links array: {json.dumps(links, indent=2, default=str)}")
+            
+            for i, link in enumerate(links):
+                logger.info(f"Link {i}: {link}")
+                logger.info(f"Link {i} type: {type(link)}")
+                if isinstance(link, dict):
+                    logger.info(f"Link {i} rel: {link.get('rel')}")
+                    logger.info(f"Link {i} href: {link.get('href')}")
+                    logger.info(f"Link {i} method: {link.get('method')}")
+                    
+                    if link.get('rel') == 'approve':
+                        approval_url = link.get('href')
+                        logger.info(f"✅ FOUND APPROVAL URL: {approval_url}")
+                        logger.info(f"✅ Approval URL type: {type(approval_url)}")
+                        logger.info(f"✅ Approval URL length: {len(approval_url) if approval_url else 0}")
+                        logger.info("=====================================")
+                        return approval_url
+                else:
+                    logger.warning(f"Link {i} is not a dict: {type(link)}")
+            
+            logger.warning("❌ NO APPROVAL LINK FOUND")
+            logger.info("Available rels: " + str([link.get('rel') if isinstance(link, dict) else 'invalid' for link in links]))
+            logger.info("All link data: " + str(links))
+            logger.info("=====================================")
             return None
-        except:
+            
+        except Exception as e:
+            logger.error(f"❌ ERROR in approval URL extraction: {str(e)}")
+            logger.error(f"Exception type: {type(e)}")
+            import traceback
+            logger.error(f"Traceback: {traceback.format_exc()}")
+            logger.info("=====================================")
             return None
