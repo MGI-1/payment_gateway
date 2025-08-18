@@ -164,7 +164,7 @@ class PaymentService(BaseSubscriptionService):
             logger.info(f"Using payment gateway: {gateway} for subscription")
             
             if gateway == 'razorpay':
-                gateway_plan_id = plan.get('razorpay_plan_id') or plan['id']
+                gateway_plan_id = plan.get('razorpay_plan_id')
                 
                 # DEBUG: Log the user object and what we're about to pass
                 logger.info(f"[SERVICE DEBUG] user object from database: {user}")
@@ -273,8 +273,8 @@ class PaymentService(BaseSubscriptionService):
             
             cursor.execute(f"""
                 SELECT * FROM {DB_TABLE_SUBSCRIPTION_PLANS}
-                WHERE id = %s AND app_id = %s
-            """, (plan_id, app_id))
+                WHERE razorpay_plan_id = %s OR paypal_plan_id = %s" AND app_id = %s
+            """, (plan_id, plan_id, app_id))
             
             plan = cursor.fetchone()
             

@@ -38,7 +38,7 @@ class RazorpayProvider:
             logger.error(traceback.format_exc())
             return False
     
-    def create_subscription(self, plan_id, customer_info, app_id, additional_notes=None):
+    def create_subscription(self, plan_id, customer_info, app_id, additional_notes=None, redirect_url=None):
         """
         Create a new subscription in Razorpay
         
@@ -47,6 +47,7 @@ class RazorpayProvider:
             customer_info: Dict with customer details
             app_id: The application ID (marketfit/saleswit)
             additional_notes: Additional notes to include
+            redirect_url: URL to redirect after payment
             
         Returns:
             Dict with subscription details or error
@@ -70,12 +71,17 @@ class RazorpayProvider:
             if additional_notes and isinstance(additional_notes, dict):
                 notes.update(additional_notes)
             
+            # Add redirect URL to notes if provided
+            if redirect_url:
+                notes['redirect_url'] = redirect_url
+            
             # DEBUG: Log exactly what we're sending to Razorpay
             logger.info(f"[RAZORPAY DEBUG] customer_info received: {customer_info}")
             logger.info(f"[RAZORPAY DEBUG] customer_info types: {[(k, type(v)) for k, v in customer_info.items()]}")
             logger.info(f"[RAZORPAY DEBUG] app_id: {app_id}, type: {type(app_id)}")
             logger.info(f"[RAZORPAY DEBUG] notes being sent: {notes}")
             logger.info(f"[RAZORPAY DEBUG] notes types: {[(k, type(v)) for k, v in notes.items()]}")
+            logger.info(f"[RAZORPAY DEBUG] redirect_url: {redirect_url}")
             
             # Create the Razorpay subscription
             subscription_data = {
@@ -85,6 +91,15 @@ class RazorpayProvider:
                 'total_count': 12,
                 'notes': notes
             }
+            
+            # Set up callback method and URL for payment success redirection
+            callback_data = {}
+            if redirect_url:
+                callback_data = {
+                    'callback_url': redirect_url,
+                    'callback_method': 'get'
+                }
+                subscription_data.update(callback_data)
             
             logger.info(f"[RAZORPAY DEBUG] Full subscription_data: {subscription_data}")    
             logger.info(f"Creating Razorpay subscription for user {user_id} with plan {plan_id}")
