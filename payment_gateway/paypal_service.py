@@ -777,16 +777,32 @@ class PayPalService(BaseSubscriptionService):
             paypal_subscription_id = subscription['paypal_subscription_id']
             new_paypal_plan_id = new_plan['paypal_plan_id']
             
+            logger.info(f"[SIMPLE UPGRADE] Starting upgrade for {paypal_subscription_id} to plan {new_paypal_plan_id}")
+            
             # Update PayPal subscription immediately
             result = self.paypal.update_subscription_plan_only(
                 paypal_subscription_id,
                 new_paypal_plan_id
             )
             
+            # ✅ ADD COMPREHENSIVE PAYPAL RESULT LOGGING
+            logger.info("=== PAYPAL SERVICE DEBUG ===")
+            logger.info(f"PayPal provider result type: {type(result)}")
+            logger.info(f"PayPal provider result: {json.dumps(result, indent=2, default=str)}")
+            logger.info(f"Result get error: {result.get('error')}")
+            logger.info(f"Result get success: {result.get('success')}")
+            logger.info(f"Result get requires_approval: {result.get('requires_approval')}")
+            logger.info(f"Result get approval_url: {result.get('approval_url')}")
+            logger.info(f"Result get status: {result.get('status')}")
+            logger.info(f"Result get message: {result.get('message')}")
+            logger.info("============================")
+            
             if result.get('error'):
+                logger.error(f"PayPal upgrade failed: {result['message']}")
                 raise ValueError(f"PayPal upgrade failed: {result['message']}")
             
             if result.get('requires_approval'):
+                logger.info(f"[SIMPLE UPGRADE] Approval required - setting pending metadata")
                 # APPROVAL REQUIRED: Only set pending metadata
                 self._set_upgrade_pending_metadata(subscription['id'], new_plan['id'])
                 
@@ -801,6 +817,7 @@ class PayPalService(BaseSubscriptionService):
                     'approval_reason': result.get('message', 'Additional authorization required')
                 }
             else:
+                logger.info(f"[SIMPLE UPGRADE] No approval required - completing immediately")
                 # NO APPROVAL: Complete upgrade immediately
                 self._update_subscription_plan_and_metadata(
                     subscription['id'], 
@@ -829,6 +846,9 @@ class PayPalService(BaseSubscriptionService):
             
         except Exception as e:
             logger.error(f"Error in simple PayPal upgrade: {str(e)}")
+            logger.error(f"Exception type: {type(e)}")
+            import traceback
+            logger.error(f"Traceback: {traceback.format_exc()}")
             raise
 
     def complete_simple_upgrade_after_approval(self, subscription_id):
