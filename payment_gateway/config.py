@@ -90,8 +90,8 @@ def get_api_base_url():
         "Either VITE_API_BASE_URL (MarketFit) or REACT_APP_API_URL (SalesWit) "
         "must be set in environment variables"
     )
-WEBHOOK_BASE_URL = get_api_base_url()
-
+#WEBHOOK_BASE_URL = get_api_base_url()
+WEBHOOK_BASE_URL = 'https://mf-backend-a0a5ama9fddqgtd8.centralus-01.azurewebsites.net'
 # ADD these new environment variables
 PAYPAL_WEBHOOK_ID = os.getenv('PAYPAL_WEBHOOK_ID', '')
 # PayPal return URLs
