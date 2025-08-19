@@ -8,6 +8,7 @@ from flask import Blueprint, request, jsonify, current_app,redirect
 import json
 import logging
 import traceback
+from .config import get_frontend_url
 from .webhooks.razorpay_handler import handle_razorpay_webhook, verify_razorpay_signature
 from .webhooks.paypal_handler import handle_paypal_webhook
 
@@ -370,15 +371,18 @@ def init_payment_routes(app, payment_service, paypal_service=None):
             
             if not subscription_id:
                 logger.warning("PayPal success handler called without subscription_id")
-                return redirect("/subscription-dashboard?error=Missing subscription information")
+                return redirect(f"{get_frontend_url()}/subscription-dashboard?error=Missing%20subscription%20information")
             
             logger.info(f"Processing PayPal success for subscription: {subscription_id}")
             
-            # Get subscription to check current state
-            subscription = paypal_service._get_subscription_details(subscription_id)
+            # Use PayPal ID lookup directly since PayPal returns PayPal subscription ID
+            subscription = paypal_service._get_subscription_by_paypal_id(subscription_id)
+            
             if not subscription:
-                logger.error(f"Subscription not found: {subscription_id}")
-                return redirect("/subscription-dashboard?error=Subscription not found")
+                logger.error(f"Subscription not found by PayPal ID: {subscription_id}")
+                return redirect(f"{get_frontend_url()}/subscription-dashboard?error=Subscription%20not%20found")
+            
+            logger.info(f"Found subscription: {subscription['id']} for PayPal ID: {subscription_id}")
             
             # Parse metadata safely
             metadata = subscription.get('metadata', {})
@@ -386,51 +390,41 @@ def init_payment_routes(app, payment_service, paypal_service=None):
                 try:
                     metadata = json.loads(metadata)
                 except json.JSONDecodeError:
-                    logger.warning(f"Invalid metadata JSON for subscription {subscription_id}")
+                    logger.warning(f"Invalid metadata JSON for subscription {subscription['id']}")
                     metadata = {}
             
-            # BUSINESS LOGIC: Handle upgrade approval completion
+            # Handle upgrade approval completion
             if metadata.get('upgrade_pending_approval'):
-                logger.info(f"Processing upgrade approval completion for subscription {subscription_id}")
+                logger.info(f"Processing upgrade approval completion for subscription {subscription['id']}")
                 
-                result = paypal_service.complete_simple_upgrade_after_approval(subscription_id)
+                result = paypal_service.complete_simple_upgrade_after_approval(subscription['id'])
                 
                 if result.get('error'):
                     error_msg = result.get('message', 'Unknown error occurred during upgrade completion')
-                    logger.error(f"Upgrade completion failed for {subscription_id}: {error_msg}")
-                    return redirect(f"/subscription-dashboard?error={error_msg}")
+                    logger.error(f"Upgrade completion failed for {subscription['id']}: {error_msg}")
+                    return redirect(f"{get_frontend_url()}/subscription-dashboard?error={error_msg}")
                 
-                logger.info(f"Upgrade approval completed successfully for subscription {subscription_id}")
-                return redirect(f"/subscription-dashboard?upgrade=success&message=Upgrade completed successfully! Your new plan is now active with temporary resources until next billing cycle.")
+                logger.info(f"Upgrade approval completed successfully for subscription {subscription['id']}")
+                success_message = "Upgrade%20completed%20successfully!%20Your%20new%20plan%20is%20now%20active%20with%20temporary%20resources%20until%20next%20billing%20cycle."
+                return redirect(f"{get_frontend_url()}/subscription-dashboard?upgrade=success&message={success_message}")
             
-            # UX ONLY: Handle new subscription activation status
+            # Handle regular subscription success cases
             else:
-                logger.info(f"Handling new subscription return for {subscription_id}, current status: {subscription.get('status')}")
+                logger.info(f"Handling regular subscription return for {subscription['id']}, current status: {subscription.get('status')}")
                 
                 if subscription['status'] == 'active':
-                    # Subscription already activated by webhook - just show success
-                    logger.info(f"Subscription {subscription_id} already active via webhook")
-                    return redirect(f"/subscription-dashboard?status=active&message=Your subscription is active and ready to use!")
-                
-                elif subscription['status'] in ['created', 'pending', 'authenticated']:
-                    # Subscription not yet activated - webhook processing or pending
-                    logger.info(f"Subscription {subscription_id} still processing, showing activating status")
-                    return redirect(f"/subscription-dashboard?status=activating&message=Your subscription is being activated. This may take a few moments...")
-                
-                elif subscription['status'] == 'cancelled':
-                    # Subscription was cancelled
-                    logger.warning(f"Subscription {subscription_id} is cancelled")
-                    return redirect(f"/subscription-dashboard?error=Subscription was cancelled")
-                
+                    logger.info(f"Subscription {subscription['id']} already active via webhook")
+                    return redirect(f"{get_frontend_url()}/subscription-dashboard?status=active&message=Your%20subscription%20is%20active%20and%20ready%20to%20use!")
                 else:
-                    # Unknown status - show generic processing message
-                    logger.warning(f"Subscription {subscription_id} has unknown status: {subscription['status']}")
-                    return redirect(f"/subscription-dashboard?status=processing&message=Your subscription is being processed. Please check back in a few minutes.")
+                    logger.info(f"Subscription {subscription['id']} still processing")
+                    return redirect(f"{get_frontend_url()}/subscription-dashboard?status=processing&message=Your%20subscription%20is%20being%20processed.%20Please%20check%20back%20in%20a%20few%20minutes.")
             
         except Exception as e:
             logger.error(f"Error in PayPal success handler: {str(e)}")
+            import traceback
             logger.error(traceback.format_exc())
-            return redirect("/subscription-dashboard?error=An error occurred while processing your subscription. Please contact support if this persists.")
+            error_message = "An%20error%20occurred%20while%20processing%20your%20subscription.%20Please%20contact%20support%20if%20this%20persists."
+            return redirect(f"{get_frontend_url()}/subscription-dashboard?error={error_message}")
 
     @payment_bp.route('/paypal-cancel', methods=['GET'])
     def paypal_subscription_cancel():
@@ -439,8 +433,8 @@ def init_payment_routes(app, payment_service, paypal_service=None):
             subscription_id = request.args.get('subscription_id')
             
             if subscription_id:
-                # Get subscription to check if it was an upgrade
-                subscription = paypal_service._get_subscription_details(subscription_id)
+                # ✅ CHANGE: Use PayPal ID lookup like the success handler
+                subscription = paypal_service._get_subscription_by_paypal_id(subscription_id)
                 if subscription:
                     metadata = subscription.get('metadata', {})
                     if isinstance(metadata, str):
@@ -451,22 +445,27 @@ def init_payment_routes(app, payment_service, paypal_service=None):
                     
                     if metadata.get('upgrade_pending_approval'):
                         # Clear pending upgrade metadata
-                        paypal_service._clear_upgrade_pending_metadata(subscription_id)
-                        logger.info(f"Cleared pending upgrade for cancelled approval: {subscription_id}")
-                        return redirect("/subscription-dashboard?cancelled=upgrade&message=Upgrade cancelled. Your current plan remains active.")
+                        paypal_service._clear_upgrade_pending_metadata(subscription['id'])  # Use internal ID
+                        logger.info(f"Cleared pending upgrade for cancelled approval: {subscription['id']}")
+                        cancel_message = "Upgrade%20cancelled.%20Your%20current%20plan%20remains%20active."
+                        return redirect(f"{get_frontend_url()}/subscription-dashboard?cancelled=upgrade&message={cancel_message}")
                     else:
                         # Regular subscription cancellation
-                        paypal_service.cancel_pending_subscription(subscription_id)
-                        return redirect("/subscription-dashboard?cancelled=subscription&message=Subscription setup cancelled.")
+                        paypal_service.cancel_pending_subscription(subscription['id'])  # Use internal ID
+                        cancel_message = "Subscription%20setup%20cancelled."
+                        return redirect(f"{get_frontend_url()}/subscription-dashboard?cancelled=subscription&message={cancel_message}")
             
-            return redirect("/subscription-dashboard?cancelled=true")
+            # Default cancellation case
+            cancel_message = "Payment%20was%20cancelled."
+            return redirect(f"{get_frontend_url()}/subscription-dashboard?cancelled=true&message={cancel_message}")
             
         except Exception as e:
             logger.error(f"Error handling PayPal cancel: {str(e)}")
-            return redirect("/subscription-dashboard?error=Cancellation processing failed")
-
-# REMOVE the existing unified endpoint entirely and replace with these:
-
+            import traceback
+            logger.error(traceback.format_exc())
+            error_message = "Cancellation%20processing%20failed.%20Please%20contact%20support%20if%20needed."
+            return redirect(f"{get_frontend_url()}/subscription-dashboard?error={error_message}")
+    
     @payment_bp.route('/razorpay-payment-complete', methods=['GET'])
     def razorpay_payment_complete():
         """Handle Razorpay payment link user redirects after payment completion"""

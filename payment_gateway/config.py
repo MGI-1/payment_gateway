@@ -68,6 +68,8 @@ def get_api_base_url():
     
     # Priority 1: MarketFit variable (VITE_API_BASE_URL)
     vite_api_url = os.getenv('VITE_API_BASE_URL')
+    print(f"DEBUG: VITE_API_BASE_URL = {vite_api_url}")
+
     if vite_api_url:
         return vite_api_url
     
@@ -97,3 +99,11 @@ PAYPAL_WEBHOOK_ID = os.getenv('PAYPAL_WEBHOOK_ID', '')
 # PayPal return URLs
 PAYPAL_RETURN_URL = f"{WEBHOOK_BASE_URL}/api/subscriptions/paypal-success"
 PAYPAL_CANCEL_URL = f"{WEBHOOK_BASE_URL}/api/subscriptions/paypal-cancel"
+
+def get_frontend_url():
+    """Get frontend URL for redirects"""
+    frontend_url = os.getenv('FRONTEND_URL')
+    if frontend_url:
+        return frontend_url.rstrip('/')
+    
+    raise ValueError("FRONTEND_URL environment variable must be set")
