@@ -573,7 +573,7 @@ def init_payment_routes(app, payment_service, paypal_service=None):
             app_id = data.get('app_id', 'marketfit')
             current_gateway = data.get('current_gateway')
             
-            logger.info(f"[UPGRADE] Params: user={user_id}, sub={subscription_id}, plan={new_plan_id}, gateway={current_gateway}")
+            logger.info(f"[UPGRADE] Params: AAAA user={user_id}, sub={subscription_id}, plan={new_plan_id}, gateway={current_gateway}")
             
             if not all([user_id, subscription_id, new_plan_id, current_gateway]):
                 logger.info("[UPGRADE] Missing required parameters")
