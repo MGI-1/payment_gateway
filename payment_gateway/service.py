@@ -286,21 +286,38 @@ class PaymentService(BaseSubscriptionService):
             logger.error(f"Error getting plan for app: {str(e)}")
             raise
 
-    
     def _extract_webhook_ids(self, payload, provider):
         """Extract entity ID and user ID from webhook payload"""
         entity_id = None
         user_id = None
         
         if provider == 'razorpay':
-            if 'payload' in payload:
-                if 'payment' in payload['payload']:
-                    entity_id = payload['payload']['payment'].get('id')
-                elif 'subscription' in payload['payload']:
-                    entity_id = payload['payload']['subscription'].get('id')
-                    # Try to extract user_id from notes
-                    if 'notes' in payload['payload']['subscription']:
-                        user_id = payload['payload']['subscription']['notes'].get('user_id')
+            # For subscription events, use existing extraction method
+            if 'subscription' in payload.get('payload', {}):
+                subscription_data = self._extract_subscription_data(payload)
+                entity_id = subscription_data.get('id')
+                
+                # Extract user_id from notes or database lookup
+                if 'notes' in subscription_data and subscription_data['notes']:
+                    user_id = subscription_data['notes'].get('user_id')
+                else:
+                    # Fallback to database lookup using existing method
+                    subscription = self._get_subscription_by_razorpay_id(entity_id)
+                    if subscription:
+                        user_id = subscription.get('user_id')
+            
+            # For payment events
+            elif 'payment' in payload.get('payload', {}):
+                payment_data = payload.get('payload', {}).get('payment', {}).get('entity', {})
+                entity_id = payment_data.get('id')
+                
+                # Try notes first, then subscription lookup
+                if 'notes' in payment_data and payment_data['notes']:
+                    user_id = payment_data['notes'].get('user_id')
+                elif 'subscription_id' in payment_data:
+                    subscription = self._get_subscription_by_razorpay_id(payment_data['subscription_id'])
+                    if subscription:
+                        user_id = subscription.get('user_id')
         
         return entity_id, user_id
 
