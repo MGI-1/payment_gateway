@@ -25,6 +25,8 @@ def setup_logging(name='payment_gateway', log_file=None):
     
     return logger
 
+logger = setup_logging('payment_gateway')
+
 # Environment detection using existing FLASK_ENV
 FLASK_ENV = os.getenv('FLASK_ENV', 'development')
 
@@ -68,7 +70,7 @@ def get_api_base_url():
     
     # Priority 1: MarketFit variable (VITE_API_BASE_URL)
     vite_api_url = os.getenv('VITE_API_BASE_URL')
-    print(f"DEBUG: VITE_API_BASE_URL = {vite_api_url}")
+    logger.info(f"DEBUG: VITE_API_BASE_URL = {vite_api_url}")
 
     if vite_api_url:
         return vite_api_url

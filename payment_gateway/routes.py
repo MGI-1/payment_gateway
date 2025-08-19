@@ -560,7 +560,7 @@ def init_payment_routes(app, payment_service, paypal_service=None):
         except Exception as e:
             logger.error(f"Error in PayPal proration cancellation: {str(e)}")
             return redirect('/subscription-dashboard?payment=error&message=Cancellation processing failed.')
-        
+            
     @payment_bp.route('/upgrade', methods=['POST'])
     def upgrade_subscription():
         """Handle upgrade with gateway parameter from frontend"""
@@ -571,7 +571,7 @@ def init_payment_routes(app, payment_service, paypal_service=None):
             subscription_id = data.get('subscription_id')
             new_plan_id = data.get('new_plan_id')
             app_id = data.get('app_id', 'marketfit')
-            current_gateway = data.get('current_gateway')  # New parameter
+            current_gateway = data.get('current_gateway')
             
             logger.info(f"[UPGRADE] Params: user={user_id}, sub={subscription_id}, plan={new_plan_id}, gateway={current_gateway}")
             
@@ -603,6 +603,32 @@ def init_payment_routes(app, payment_service, paypal_service=None):
                 usage_data = paypal_service.get_current_usage(user_id, subscription_id, app_id)
                 if not usage_data:
                     raise ValueError("Usage data not found")
+
+                # ✅ NEW: Check if billing is within next 2 days BEFORE calling PayPal
+                billing_period_end = usage_data['billing_period_end']
+                if billing_period_end:
+                    from datetime import datetime, timedelta
+                    
+                    # Handle both datetime objects and strings
+                    if isinstance(billing_period_end, str):
+                        billing_end = datetime.fromisoformat(billing_period_end.replace('Z', '+00:00'))
+                    else:
+                        billing_end = billing_period_end
+                    
+                    now = datetime.now(billing_end.tzinfo if billing_end.tzinfo else None)
+                    two_days_from_now = now + timedelta(days=2)
+                    
+                    if billing_end <= two_days_from_now:
+                        logger.info(f"[UPGRADE] Billing within 2 days ({billing_end}), blocking upgrade")
+                        return jsonify({
+                            'result': {
+                                'success': False,
+                                'error_type': 'billing_cycle_timing',
+                                'message': 'Your next billing cycle is within the next 2 days. Please try upgrading after your billing cycle completes to avoid any issues.',
+                                'title': 'Upgrade Temporarily Unavailable',
+                                'action_required': 'retry_after_billing'
+                            }
+                        }), 200
 
                 # Get current plan for resource calculation
                 current_plan = paypal_service._get_plan(subscription['plan_id'])
