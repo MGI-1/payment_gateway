@@ -921,27 +921,35 @@ class PayPalService(BaseSubscriptionService):
             return {'error': True, 'message': str(e)}
 
     def _handle_annual_upgrade(self, subscription, current_plan, new_plan, app_id, billing_cycle_info, resource_info):
-        """Handle annual to annual PayPal upgrade with proration payment"""
+        """Handle annual to annual PayPal upgrade with correct proration calculation"""
         try:
-            # Calculate proration amount and messaging
+            # Calculate value remaining percentage
             value_remaining_pct = self._calculate_value_remaining_percentage(billing_cycle_info, resource_info)
-            remaining_period_value = round(value_remaining_pct * self._ensure_float(new_plan['amount']), 2)
+            
+            # ✅ NEW: Calculate both current and new plan remaining values
+            current_plan_remaining_value = round(value_remaining_pct * self._ensure_float(current_plan['amount']), 2)
+            new_plan_remaining_value = round(value_remaining_pct * self._ensure_float(new_plan['amount']), 2)
+            
+            # ✅ NEW: Calculate the difference (what user actually needs to pay)
+            proration_difference = new_plan_remaining_value - current_plan_remaining_value
             
             time_remaining = billing_cycle_info['time_factor'] * 100
             resource_remaining = (1 - resource_info['base_plan_consumed_pct']) * 100
             
+            # ✅ UPDATED: Enhanced message with correct calculation explanation
             message = (
                 f"Upgrading from {current_plan['name']} to {new_plan['name']}. "
                 f"You have {time_remaining:.0f}% time remaining and {resource_remaining:.0f}% resources remaining in your current billing cycle. "
-                f"We're charging you ${remaining_period_value:.2f} for the upgraded features for the remaining period. "
-                f"This is calculated based on the minimum of time/resources remaining to ensure fair billing."
+                f"Current plan remaining value: ${current_plan_remaining_value:.2f}, "
+                f"New plan remaining value: ${new_plan_remaining_value:.2f}. "
+                f"You need to pay the difference of ${proration_difference:.2f} for the upgraded features for the remaining period."
             )
             
-            # Create one-time PayPal payment for proration
+            # ✅ UPDATED: Create payment for the difference amount
             proration_payment_result = self._create_one_time_payment(
-                remaining_period_value,
+                proration_difference,  # ← Now charging only the difference
                 subscription,
-                'Upgrade proration payment'
+                f'Upgrade proration payment (difference): ${proration_difference:.2f}'
             )
             
             if proration_payment_result.get('error'):
@@ -959,7 +967,7 @@ class PayPalService(BaseSubscriptionService):
                 'upgrade_type': 'paypal_with_proration',
                 'subscription_id': subscription['id'],
                 'new_plan_id': new_plan['id'],
-                'proration_amount': remaining_period_value,
+                'proration_amount': proration_difference,  # ← Updated to show difference
                 'payment_required': True,
                 'payment_url': proration_payment_result['approval_url'],
                 'message': message,
@@ -968,7 +976,9 @@ class PayPalService(BaseSubscriptionService):
                     'time_remaining': f"{time_remaining:.0f}%",
                     'resources_remaining': f"{resource_remaining:.0f}%",
                     'billing_basis': 'minimum of time and resources remaining',
-                    'proration_charge': remaining_period_value
+                    'current_plan_remaining_value': current_plan_remaining_value,
+                    'new_plan_remaining_value': new_plan_remaining_value,
+                    'proration_charge': proration_difference  # ← Updated
                 }
             }
             

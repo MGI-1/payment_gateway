@@ -496,16 +496,16 @@ def init_payment_routes(app, payment_service, paypal_service=None):
             
             # Determine redirect message based on status
             if status == 'success' or payment_id:
-                return redirect('/subscription-dashboard?payment=success&message=Payment completed successfully!')
+                return redirect(f"{get_frontend_url()}/subscription-dashboard?payment=success&message=Payment completed successfully!'")
             elif status == 'failed':
-                return redirect('/subscription-dashboard?payment=failed&message=Payment was not successful. Please try again.')
+                return redirect(f"{get_frontend_url()}/subscription-dashboard?payment=failed&message=Payment was not successful. Please try again.'")
             else:
-                return redirect('/subscription-dashboard?payment=completed&message=Payment processing completed.')
+                return redirect(f"{get_frontend_url()}/subscription-dashboard?payment=completed&message=Payment processing completed.'")
                 
         except Exception as e:
             logger.error(f"Error in Razorpay payment completion: {str(e)}")
             logger.error(traceback.format_exc())
-            return redirect('/subscription-dashboard?error=Payment completion processing failed. Please contact support if payment was deducted.')
+            return redirect(f"{get_frontend_url()}/subscription-dashboard?error=Payment completion processing failed. Please contact support if payment was deducted.'")
 
     @payment_bp.route('/paypal-proration-complete', methods=['GET'])
     def paypal_proration_complete():
@@ -523,25 +523,25 @@ def init_payment_routes(app, payment_service, paypal_service=None):
                 
                 if result.get('success'):
                     logger.info(f"Proration payment completed successfully: {token}")
-                    return redirect('/subscription-dashboard?upgrade=success&message=Your subscription has been upgraded successfully! Proration payment completed.')
+                    return redirect(f"{get_frontend_url()}/subscription-dashboard?upgrade=success&message=Your subscription has been upgraded successfully! Proration payment completed.'")
                 else:
                     error_msg = result.get('message', 'Unknown error occurred')
                     logger.error(f"Proration payment failed: {token}, error: {error_msg}")
-                    return redirect(f'/subscription-dashboard?upgrade=error&message=There was an issue processing your upgrade payment: {error_msg}')
+                    return redirect(f"{get_frontend_url()}/subscription-dashboard?upgrade=error&message=There was an issue processing your upgrade payment: {error_msg}'")
             
             elif payment_type == 'proration_cancel':
                 logger.info(f"Proration payment cancelled: {token}")
-                return redirect('/subscription-dashboard?upgrade=cancelled&message=Upgrade payment was cancelled. Your current plan remains active.')
+                return redirect(f"{get_frontend_url()}/subscription-dashboard?upgrade=cancelled&message=Upgrade payment was cancelled. Your current plan remains active.'")
             
             else:
                 # Generic PayPal payment completion
                 logger.info(f"Generic PayPal payment completion: type={payment_type}")
-                return redirect('/subscription-dashboard?payment=success&message=PayPal payment completed successfully!')
+                return redirect(f"{get_frontend_url()}/subscription-dashboard?payment=success&message=PayPal payment completed successfully!'")
             
         except Exception as e:
             logger.error(f"Error in PayPal proration completion: {str(e)}")
             logger.error(traceback.format_exc())
-            return redirect('/subscription-dashboard?upgrade=error&message=Payment processing failed. Please contact support if payment was deducted.')
+            return redirect(f"{get_frontend_url()}/subscription-dashboard?upgrade=error&message=Payment processing failed. Please contact support if payment was deducted.'")
 
     @payment_bp.route('/paypal-proration-cancel', methods=['GET'])
     def paypal_proration_cancel():
@@ -553,14 +553,14 @@ def init_payment_routes(app, payment_service, paypal_service=None):
             logger.info(f"PayPal proration cancellation: type={payment_type}, token={token}")
             
             if payment_type == 'proration':
-                return redirect('/subscription-dashboard?upgrade=cancelled&message=Upgrade payment was cancelled. Your current plan remains active.')
+                return redirect(f"{get_frontend_url()}/subscription-dashboard?upgrade=cancelled&message=Upgrade payment was cancelled. Your current plan remains active.'")
             else:
-                return redirect('/subscription-dashboard?payment=cancelled&message=Payment was cancelled.')
+                return redirect(f"{get_frontend_url()}/subscription-dashboard?payment=cancelled&message=Payment was cancelled.'")
             
         except Exception as e:
             logger.error(f"Error in PayPal proration cancellation: {str(e)}")
-            return redirect('/subscription-dashboard?payment=error&message=Cancellation processing failed.')
-            
+            return redirect(f"{get_frontend_url()}/subscription-dashboard?payment=error&message=Cancellation processing failed.'")
+                
     @payment_bp.route('/upgrade', methods=['POST'])
     def upgrade_subscription():
         """Handle upgrade with gateway parameter from frontend"""
@@ -573,7 +573,7 @@ def init_payment_routes(app, payment_service, paypal_service=None):
             app_id = data.get('app_id', 'marketfit')
             current_gateway = data.get('current_gateway')
             
-            logger.info(f"[UPGRADE] Params: AAAA user={user_id}, sub={subscription_id}, plan={new_plan_id}, gateway={current_gateway}")
+            logger.info(f"[UPGRADE] Params: user={user_id}, sub={subscription_id}, plan={new_plan_id}, gateway={current_gateway}")
             
             if not all([user_id, subscription_id, new_plan_id, current_gateway]):
                 logger.info("[UPGRADE] Missing required parameters")
@@ -604,19 +604,37 @@ def init_payment_routes(app, payment_service, paypal_service=None):
                 if not usage_data:
                     raise ValueError("Usage data not found")
 
-                # ✅ NEW: Check if billing is within next 2 days BEFORE calling PayPal
-                billing_period_end = usage_data['billing_period_end']
+                # ✅ DEBUG: Log the actual usage data
+                logger.info("=== BILLING DEBUG ===")
+                logger.info(f"usage_data type: {type(usage_data)}")
+                logger.info(f"usage_data keys: {list(usage_data.keys()) if isinstance(usage_data, dict) else 'Not a dict'}")
+                logger.info(f"billing_period_start: {usage_data.get('billing_period_start')} (type: {type(usage_data.get('billing_period_start'))})")
+                logger.info(f"billing_period_end: {usage_data.get('billing_period_end')} (type: {type(usage_data.get('billing_period_end'))})")
+                logger.info(f"Full usage_data: {usage_data}")
+                logger.info("====================")
+
+                # ✅ Method 1: Check using usage_data billing period
+                billing_period_end = usage_data.get('billing_period_end')
+                logger.info(f"[DEBUG] Raw billing_period_end: {billing_period_end}")
+
                 if billing_period_end:
                     from datetime import datetime, timedelta
                     
                     # Handle both datetime objects and strings
                     if isinstance(billing_period_end, str):
+                        logger.info(f"[DEBUG] Converting string to datetime: {billing_period_end}")
                         billing_end = datetime.fromisoformat(billing_period_end.replace('Z', '+00:00'))
                     else:
+                        logger.info(f"[DEBUG] Using datetime object directly")
                         billing_end = billing_period_end
                     
                     now = datetime.now(billing_end.tzinfo if billing_end.tzinfo else None)
                     two_days_from_now = now + timedelta(days=2)
+                    
+                    logger.info(f"[DEBUG] billing_end: {billing_end}")
+                    logger.info(f"[DEBUG] now: {now}")
+                    logger.info(f"[DEBUG] two_days_from_now: {two_days_from_now}")
+                    logger.info(f"[DEBUG] billing_end <= two_days_from_now: {billing_end <= two_days_from_now}")
                     
                     if billing_end <= two_days_from_now:
                         logger.info(f"[UPGRADE] Billing within 2 days ({billing_end}), blocking upgrade")
@@ -629,6 +647,56 @@ def init_payment_routes(app, payment_service, paypal_service=None):
                                 'action_required': 'retry_after_billing'
                             }
                         }), 200
+                    else:
+                        logger.info(f"[DEBUG] Billing is more than 2 days away, proceeding with upgrade")
+                else:
+                    logger.warning(f"[DEBUG] No billing_period_end found in usage_data, trying PayPal API")
+
+                # ✅ Method 2: Check PayPal subscription directly if usage_data doesn't have billing info
+                paypal_subscription_id = subscription.get('paypal_subscription_id')
+                logger.info(f"[DEBUG] PayPal subscription ID: {paypal_subscription_id}")
+                
+                if paypal_subscription_id and not billing_period_end:
+                    # Get PayPal subscription details directly
+                    paypal_details = paypal_service.paypal.get_subscription(paypal_subscription_id)
+                    logger.info(f"[DEBUG] PayPal subscription details response: {json.dumps(paypal_details, indent=2, default=str)}")
+                    
+                    if not paypal_details.get('error'):
+                        billing_info = paypal_details.get('billing_info', {})
+                        next_billing_time = billing_info.get('next_billing_time')
+                        logger.info(f"[DEBUG] PayPal next_billing_time: {next_billing_time}")
+                        
+                        if next_billing_time:
+                            from datetime import datetime, timedelta
+                            next_billing = datetime.fromisoformat(next_billing_time.replace('Z', '+00:00'))
+                            now = datetime.now(next_billing.tzinfo)
+                            two_days_from_now = now + timedelta(days=2)
+                            
+                            logger.info(f"[DEBUG] PayPal next_billing: {next_billing}")
+                            logger.info(f"[DEBUG] now: {now}")
+                            logger.info(f"[DEBUG] two_days_from_now: {two_days_from_now}")
+                            logger.info(f"[DEBUG] next_billing <= two_days_from_now: {next_billing <= two_days_from_now}")
+                            
+                            if next_billing <= two_days_from_now:
+                                logger.info(f"[UPGRADE] PayPal billing within 2 days, blocking upgrade")
+                                return jsonify({
+                                    'result': {
+                                        'success': False,
+                                        'error_type': 'billing_cycle_timing',
+                                        'message': 'Your next billing cycle is within the next 2 days. Please try upgrading after your billing cycle completes to avoid any issues.',
+                                        'title': 'Upgrade Temporarily Unavailable',
+                                        'action_required': 'retry_after_billing'
+                                    }
+                                }), 200
+                            else:
+                                logger.info(f"[DEBUG] PayPal billing is more than 2 days away, proceeding with upgrade")
+                        else:
+                            logger.warning(f"[DEBUG] No next_billing_time found in PayPal API response")
+                    else:
+                        logger.error(f"[DEBUG] Error getting PayPal subscription details: {paypal_details}")
+
+                # If we reach here, billing check passed or couldn't be determined - proceed with upgrade
+                logger.info(f"[DEBUG] Billing check completed, proceeding with upgrade")
 
                 # Get current plan for resource calculation
                 current_plan = paypal_service._get_plan(subscription['plan_id'])
