@@ -200,9 +200,14 @@ class PaymentService(BaseSubscriptionService):
             cursor = conn.cursor(dictionary=True)
             
             # Start focused transaction
-            
-            
             try:
+                # **CHANGE 1: Get the plan record to extract internal plan ID**
+                plan = self._get_plan(plan_id)
+                if not plan:
+                    raise ValueError(f"Plan {plan_id} not found")
+                
+                internal_plan_id = plan['id']  # **NEW LINE: Extract internal database plan ID**
+                
                 # Generate IDs
                 subscription_id = generate_id('sub_')
                 gateway_sub_id = gateway_response.get('id')
@@ -220,7 +225,7 @@ class PaymentService(BaseSubscriptionService):
                 """, (
                     subscription_id, 
                     user_id, 
-                    plan_id, 
+                    internal_plan_id,  # **CHANGE 2: Use internal_plan_id instead of plan_id**
                     razorpay_subscription_id,
                     paypal_subscription_id,
                     app_id, 
@@ -265,27 +270,6 @@ class PaymentService(BaseSubscriptionService):
             logger.error(f"Error saving paid subscription: {str(e)}")
             raise
     
-    def _get_plan_for_app(self, plan_id, app_id):
-        """Get plan details for specific app with isolated connection"""
-        try:
-            conn = self.db.get_connection()
-            cursor = conn.cursor(dictionary=True)
-            
-            cursor.execute(f"""
-                SELECT * FROM {DB_TABLE_SUBSCRIPTION_PLANS}
-                WHERE razorpay_plan_id = %s OR paypal_plan_id = %s" AND app_id = %s
-            """, (plan_id, plan_id, app_id))
-            
-            plan = cursor.fetchone()
-            
-            cursor.close()
-            conn.close()
-            return plan
-            
-        except Exception as e:
-            logger.error(f"Error getting plan for app: {str(e)}")
-            raise
-
     def _extract_webhook_ids(self, payload, provider):
         """Extract entity ID and user ID from webhook payload"""
         entity_id = None
@@ -581,7 +565,7 @@ class PaymentService(BaseSubscriptionService):
             logger.error(f"Error handling subscription activated: {str(e)}")
             logger.error(traceback.format_exc())
             return {'status': 'error', 'message': str(e)}
-    
+        
     def _handle_razorpay_subscription_charged(self, subscription_data, payment_data):
         """Handle subscription.charged webhook event with plan change and payment method detection"""
         try:
@@ -605,7 +589,7 @@ class PaymentService(BaseSubscriptionService):
                 conn.close()
                 return {'success': False, 'error': 'Subscription not found'}
             
-            database_plan_id = subscription['plan_id']
+            database_plan_id = subscription['plan_id']  # This is already the internal plan ID
             
             # Check if this is a fresh subscription (recent activation) to prevent duplicates
             cursor.execute("""
@@ -634,35 +618,43 @@ class PaymentService(BaseSubscriptionService):
             plan_changed = False
             resource_quota_handled = False
             
-            # DETECT PLAN CHANGE (Manual Downgrade/Upgrade)
-            if webhook_plan_id and webhook_plan_id != database_plan_id:
-                plan_changed = True
-                logger.info(f"Plan change detected: {database_plan_id} → {webhook_plan_id}")
+            # FIXED: DETECT PLAN CHANGE (Optimized - no redundant database call)
+            if webhook_plan_id:
+                # Get the plan record for webhook plan ID to get its internal ID
+                webhook_plan = self._get_plan(webhook_plan_id)
                 
-                # Get new plan details
-                new_plan = self._get_plan_by_razorpay_id(webhook_plan_id, subscription['app_id'])
-                if new_plan:
-                    # Update subscription plan in database
-                    cursor.execute(f"""
-                        UPDATE {DB_TABLE_USER_SUBSCRIPTIONS}
-                        SET plan_id = %s, plan_name = %s, amount = %s, currency = %s
-                        WHERE id = %s
-                    """, (new_plan['id'], new_plan['name'], new_plan['amount'], 
-                        new_plan['currency'], subscription['id']))
+                if webhook_plan:
+                    webhook_internal_id = webhook_plan['id']
                     
-                    # Reset resource quota to new plan
-                    self._reset_quota_for_plan_change(
-                        subscription['user_id'], 
-                        subscription['id'],
-                        new_plan,
-                        subscription['app_id']
-                    )
-                    resource_quota_handled = True
-                    
-                    logger.info(f"Plan change synced: User {subscription['user_id']} moved to {new_plan['name']}")
+                    # Compare webhook internal ID with database internal ID directly
+                    if webhook_internal_id != database_plan_id:
+                        plan_changed = True
+                        logger.info(f"Plan change detected: {database_plan_id} → {webhook_internal_id} ({webhook_plan['name']})")
+                        
+                        # Update subscription plan in database
+                        cursor.execute(f"""
+                            UPDATE {DB_TABLE_USER_SUBSCRIPTIONS}
+                            SET plan_id = %s, updated_at = NOW()
+                            WHERE id = %s
+                        """, (webhook_internal_id, subscription['id']))
+                        
+                        # Reset resource quota to new plan
+                        self._reset_quota_for_plan_change(
+                            subscription['user_id'], 
+                            subscription['id'],
+                            webhook_plan,
+                            subscription['app_id']
+                        )
+                        resource_quota_handled = True
+                        
+                        logger.info(f"Plan change synced: User {subscription['user_id']} moved to {webhook_plan['name']}")
+                    else:
+                        logger.debug(f"No plan change detected: same plan ID {database_plan_id}")
+                else:
+                    logger.warning(f"Webhook plan {webhook_plan_id} not found in database")
             
-            # DETECT PAYMENT METHOD CHANGE (only once)
-            current_payment_method = payment_data.get('method')  # From current payment
+            # DETECT PAYMENT METHOD CHANGE (existing logic)
+            current_payment_method = payment_data.get('method')
             
             if current_payment_method:
                 # Get last stored payment method
@@ -693,7 +685,7 @@ class PaymentService(BaseSubscriptionService):
             
             # Extract payment data
             payment_id = payment_data.get('id')
-            razorpay_invoice_id = payment_data.get('invoice_id')  # Extract Razorpay invoice ID
+            razorpay_invoice_id = payment_data.get('invoice_id')
             amount = payment_data.get('amount', 0) / 100  # Convert paisa to rupees
             currency = payment_data.get('currency', 'INR')
             
@@ -719,7 +711,7 @@ class PaymentService(BaseSubscriptionService):
                     subscription['id'],
                     subscription['user_id'],
                     payment_id,
-                    razorpay_invoice_id,  # Now storing Razorpay invoice ID
+                    razorpay_invoice_id,
                     amount,
                     currency,
                     'paid',
@@ -741,17 +733,11 @@ class PaymentService(BaseSubscriptionService):
                 )
             
             # Get plan details for proper interval calculation
-            cursor.execute(f"""
-                SELECT `interval`, interval_count
-                FROM {DB_TABLE_SUBSCRIPTION_PLANS}
-                WHERE id = %s
-            """, (subscription['plan_id'],))
+            current_plan = self._get_plan(database_plan_id)
             
-            plan_details = cursor.fetchone()
-            
-            if plan_details:
-                interval = plan_details['interval']
-                interval_count = plan_details['interval_count']
+            if current_plan:
+                interval = current_plan['interval']
+                interval_count = current_plan['interval_count']
                 
                 # Calculate proper interval for SQL
                 if interval == 'month':
@@ -789,7 +775,8 @@ class PaymentService(BaseSubscriptionService):
                 'subscription_id': subscription['id'],
                 'invoice_id': invoice_id,
                 'amount': amount,
-                'payment_method': current_payment_method
+                'payment_method': current_payment_method,
+                'plan_changed': plan_changed
             }
             
         except Exception as e:
@@ -1312,15 +1299,22 @@ class PaymentService(BaseSubscriptionService):
             cursor = conn.cursor(dictionary=True)
             
             # Extract relevant fields from subscription data
-            plan_id = subscription_data.get('plan_id')
+            webhook_plan_id = subscription_data.get('plan_id')  # Razorpay plan ID
             status = subscription_data.get('status')
             
             update_fields = []
             update_values = []
             
-            if plan_id:
-                update_fields.append("plan_id = %s")
-                update_values.append(plan_id)
+            # FIXED: Handle plan_id properly
+            if webhook_plan_id:
+                # Resolve Razorpay plan ID to internal database plan ID
+                plan = self._get_plan(webhook_plan_id)
+                if plan:
+                    update_fields.append("plan_id = %s")
+                    update_values.append(plan['id'])  # ← FIXED: Use internal plan ID
+                    logger.info(f"Webhook plan update: {webhook_plan_id} → {plan['id']}")
+                else:
+                    logger.warning(f"Plan {webhook_plan_id} not found, skipping plan update")
             
             if status:
                 update_fields.append("status = %s")
@@ -1340,7 +1334,7 @@ class PaymentService(BaseSubscriptionService):
                 
                 cursor.execute(query, update_values)
                 conn.commit()
-            
+                
             cursor.close()
             conn.close()
             

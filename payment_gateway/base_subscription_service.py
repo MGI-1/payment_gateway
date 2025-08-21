@@ -35,14 +35,15 @@ class BaseSubscriptionService:
     # =============================================================================
 
     def _get_plan(self, plan_id):
-        """Get plan details with isolated connection"""
+        """Get plan details with isolated connection - handles internal ID, Razorpay ID, or PayPal ID"""
         try:
             conn = self.db.get_connection()
             cursor = conn.cursor(dictionary=True)
             
+            # Enhanced query to handle internal ID, Razorpay ID, or PayPal ID
             cursor.execute(
-                f"SELECT * FROM {DB_TABLE_SUBSCRIPTION_PLANS} WHERE razorpay_plan_id = %s OR paypal_plan_id = %s",
-                (plan_id, plan_id)
+                f"SELECT * FROM {DB_TABLE_SUBSCRIPTION_PLANS} WHERE id = %s OR razorpay_plan_id = %s OR paypal_plan_id = %s",
+                (plan_id, plan_id, plan_id)
             )
             plan = cursor.fetchone()
             
@@ -183,6 +184,11 @@ class BaseSubscriptionService:
     def _update_subscription_plan(self, subscription_id, new_plan_id):
         """Update subscription plan in database"""
         try:
+            # Get the plan record to ensure we use internal ID
+            plan = self._get_plan(new_plan_id)
+            if not plan:
+                raise ValueError(f"Plan {new_plan_id} not found")
+            
             conn = self.db.get_connection()
             cursor = conn.cursor()
             
@@ -190,7 +196,7 @@ class BaseSubscriptionService:
                 UPDATE {DB_TABLE_USER_SUBSCRIPTIONS}
                 SET plan_id = %s, updated_at = NOW()
                 WHERE id = %s
-            """, (new_plan_id, subscription_id))
+            """, (plan['id'], subscription_id))  # ← FIXED: Use internal database plan ID
             
             conn.commit()
             cursor.close()
@@ -233,6 +239,11 @@ class BaseSubscriptionService:
     def _update_subscription_plan_and_metadata(self, subscription_id, new_plan_id, upgrade_metadata):
         """Update subscription plan and metadata in single atomic operation"""
         try:
+            # Get the plan record to ensure we use internal ID
+            plan = self._get_plan(new_plan_id)
+            if not plan:
+                raise ValueError(f"Plan {new_plan_id} not found")
+            
             conn = self.db.get_connection()
             cursor = conn.cursor(dictionary=True)
             
@@ -242,7 +253,7 @@ class BaseSubscriptionService:
                     metadata = JSON_MERGE_PATCH(IFNULL(metadata, '{{}}'), %s),
                     updated_at = NOW()
                 WHERE id = %s
-            """, (new_plan_id, json.dumps(upgrade_metadata), subscription_id))
+            """, (plan['id'], json.dumps(upgrade_metadata), subscription_id))  # ← FIXED: Use internal database plan ID
             
             conn.commit()
             cursor.close()
@@ -1238,13 +1249,13 @@ class BaseSubscriptionService:
             try:
                 if existing_subscription:
                     # User already has a subscription, update if it's not the same plan
-                    if existing_subscription['plan_id'] != plan_id:
+                    if existing_subscription['plan_id'] != plan['id']:  # ← FIXED: Compare with internal plan ID
                         cursor.execute(f"""
                             UPDATE {DB_TABLE_USER_SUBSCRIPTIONS}
                             SET plan_id = %s, current_period_start = NOW(), 
                                 current_period_end = DATE_ADD(NOW(), INTERVAL %s MONTH)
                             WHERE id = %s
-                        """, (plan_id, plan['interval_count'], existing_subscription['id']))
+                        """, (plan['id'], plan['interval_count'], existing_subscription['id']))  # ← FIXED: Use internal plan ID
                         subscription_id = existing_subscription['id']
                     else:
                         subscription_id = existing_subscription['id']
@@ -1262,7 +1273,7 @@ class BaseSubscriptionService:
                         INSERT INTO {DB_TABLE_USER_SUBSCRIPTIONS}
                         (id, user_id, plan_id, status, current_period_start, current_period_end, app_id)
                         VALUES (%s, %s, %s, 'active', %s, %s, %s)
-                    """, (subscription_id, user_id, plan_id, current_period_start, current_period_end, app_id))
+                    """, (subscription_id, user_id, plan['id'], current_period_start, current_period_end, app_id))  # ← FIXED: Use internal plan ID
                 
                 conn.commit()
                 
@@ -1287,4 +1298,3 @@ class BaseSubscriptionService:
         except Exception as e:
             logger.error(f"Error creating free subscription: {str(e)}")
             raise
-

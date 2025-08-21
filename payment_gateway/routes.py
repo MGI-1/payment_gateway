@@ -289,34 +289,7 @@ def init_payment_routes(app, payment_service, paypal_service=None):
             logger.error(f"Error initializing resource quota: {str(e)}")
             logger.error(traceback.format_exc())
             return jsonify({'error': str(e)}), 500
-    
-    @payment_bp.route('/record-paypal', methods=['POST'])
-    def record_paypal_subscription():
-        """Record a PayPal subscription in the database"""
-        try:
-            data = request.json
-            user_id = data.get('user_id')
-            plan_id = data.get('plan_id')
-            app_id = data.get('app_id', 'marketfit')
-            paypal_subscription_id = data.get('paypal_subscription_id')
-            
-            if not user_id or not plan_id or not paypal_subscription_id:
-                return jsonify({'error': 'Missing required parameters'}), 400
-            
-            # Create or update subscription record
-            subscription = payment_service.create_paypal_subscription(
-                user_id, 
-                plan_id, 
-                paypal_subscription_id,
-                app_id
-            )
-            
-            return jsonify({'subscription': subscription})
-        except Exception as e:
-            logger.error(f"Error recording PayPal subscription: {str(e)}")
-            logger.error(traceback.format_exc())
-            return jsonify({'error': str(e)}), 500
-        
+       
     @payment_bp.route('/ensure-resource-quota', methods=['POST'])
     def ensure_resource_quota():
         """Ensure user has a resource quota entry"""

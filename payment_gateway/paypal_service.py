@@ -134,6 +134,11 @@ class PayPalService(BaseSubscriptionService):
     def _store_subscription(self, subscription_data):
         """Store subscription in database"""
         try:
+            # Get the plan record to ensure we use internal ID
+            plan = self._get_plan(subscription_data['plan_id'])
+            if not plan:
+                raise ValueError(f"Plan {subscription_data['plan_id']} not found")
+            
             conn = self.db.get_connection()
             cursor = conn.cursor()
             
@@ -145,7 +150,7 @@ class PayPalService(BaseSubscriptionService):
             """, (
                 subscription_data['id'],
                 subscription_data['user_id'],
-                subscription_data['plan_id'],
+                plan['id'],  # ← FIXED: Use internal database plan ID
                 subscription_data['paypal_subscription_id'],
                 subscription_data['payment_gateway'],
                 subscription_data['status'],
