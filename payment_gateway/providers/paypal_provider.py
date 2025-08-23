@@ -299,6 +299,8 @@ class PayPalProvider:
             logger.error(f"Error cancelling PayPal subscription: {str(e)}")
             return {'error': True, 'message': str(e)}
     
+    # Update the existing update_subscription_plan_only method in paypal_provider.py
+
     def update_subscription_plan_only(self, subscription_id, new_plan_id):
         """Update PayPal subscription plan with authorization check"""
         if not self.initialized:
@@ -311,8 +313,9 @@ class PayPalProvider:
                 "plan_id": new_plan_id,
                 "application_context": {
                     "user_action": "SUBSCRIBE_NOW",
-                    "return_url": PAYPAL_RETURN_URL,
-                    "cancel_url": PAYPAL_CANCEL_URL
+                    # ✅ UPDATED: Include subscription_id in return URLs
+                    "return_url": f"{WEBHOOK_BASE_URL}/api/subscriptions/paypal-approval-complete?subscription_id={subscription_id}",
+                    "cancel_url": f"{WEBHOOK_BASE_URL}/api/subscriptions/paypal-approval-cancel?subscription_id={subscription_id}"
                 }
             }
             
@@ -324,12 +327,7 @@ class PayPalProvider:
                 data=revision_data
             )
             
-            # ✅ ADD COMPREHENSIVE PAYPAL API RESPONSE LOGGING
-            logger.info("=== PAYPAL PROVIDER DEBUG ===")
             logger.info(f"PayPal API raw response: {json.dumps(result, indent=2, default=str)}")
-            logger.info(f"PayPal API response type: {type(result)}")
-            logger.info(f"PayPal API response keys: {list(result.keys()) if isinstance(result, dict) else 'Not a dict'}")
-            logger.info(f"PayPal API error flag: {result.get('error') if isinstance(result, dict) else 'N/A'}")
             
             if result.get('error'):
                 logger.error(f"PayPal API returned error: {result}")
@@ -338,13 +336,6 @@ class PayPalProvider:
             # Extract approval URL
             approval_url = self._extract_approval_url(result)
             status = result.get('status', '')
-            
-            # ✅ ADD EXTRACTION RESULT LOGGING
-            logger.info(f"Extracted approval_url: {approval_url}")
-            logger.info(f"Approval URL type: {type(approval_url)}")
-            logger.info(f"PayPal status: {status}")
-            logger.info(f"Links in PayPal response: {result.get('links', 'No links found')}")
-            logger.info("=============================")
             
             approval_reason = None
             if approval_url:
@@ -362,7 +353,7 @@ class PayPalProvider:
                 'approval_reason': approval_reason,
                 'status': status,
                 'message': f'Plan updated. {approval_reason}' if approval_url else 'Plan updated successfully.',
-                'paypal_raw_response': result  # Include raw response for debugging
+                'subscription_id': subscription_id  # ✅ ADD subscription_id to response
             }
             
             logger.info(f"[PAYPAL PROVIDER] Final result: {json.dumps(final_result, indent=2, default=str)}")
@@ -371,9 +362,7 @@ class PayPalProvider:
             
         except Exception as e:
             logger.error(f"Error updating PayPal subscription plan: {str(e)}")
-            logger.error(f"Exception type: {type(e)}")
-            import traceback
-            logger.error(f"Traceback: {traceback.format_exc()}")
+            logger.error(traceback.format_exc())
             return {'error': True, 'message': str(e)}
 
     def create_one_time_payment(self, payment_data):

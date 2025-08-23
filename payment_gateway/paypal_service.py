@@ -277,6 +277,316 @@ class PayPalService(BaseSubscriptionService):
             logger.error(traceback.format_exc())
             return {'success': False, 'message': str(e)}
 
+    # Add these methods to your PayPalService class in paypal_service.py
+
+    def _store_approval_requirement(self, subscription_id, new_plan_id, approval_url):
+        """Store approval requirement in subscription metadata"""
+        try:
+            conn = self.db.get_connection()
+            cursor = conn.cursor()
+            
+            approval_metadata = {
+                'paypal_approval_required': True,
+                'approval_url': approval_url,
+                'pending_plan_id': new_plan_id,
+                'approval_created_at': datetime.now().isoformat()
+            }
+            
+            cursor.execute(f"""
+                UPDATE {DB_TABLE_USER_SUBSCRIPTIONS}
+                SET metadata = JSON_MERGE_PATCH(IFNULL(metadata, '{{}}'), %s),
+                    updated_at = NOW()
+                WHERE id = %s
+            """, (json.dumps(approval_metadata), subscription_id))
+            
+            conn.commit()
+            cursor.close()
+            conn.close()
+            
+            logger.info(f"Stored approval requirement for subscription {subscription_id}")
+            
+        except Exception as e:
+            logger.error(f"Error storing approval requirement: {str(e)}")
+            raise
+
+    def _complete_upgrade_locally(self, subscription_id, new_plan_id):
+        """Complete upgrade in local database"""
+        try:
+            subscription = self._get_subscription_details(subscription_id)
+            if not subscription:
+                raise ValueError("Subscription not found")
+            
+            self._update_subscription_plan(subscription_id, new_plan_id)
+            self.initialize_resource_quota(
+                subscription['user_id'], 
+                subscription_id, 
+                subscription['app_id']
+            )
+            self._clear_pending_upgrade(subscription_id)
+            
+            logger.info(f"Completed upgrade locally: subscription {subscription_id} to plan {new_plan_id}")
+            
+        except Exception as e:
+            logger.error(f"Error completing upgrade locally: {str(e)}")
+            raise
+
+    def _clear_approval_metadata(self, subscription_id):
+        """Clear approval metadata after completion"""
+        try:
+            conn = self.db.get_connection()
+            cursor = conn.cursor()
+            
+            cursor.execute(f"""
+                UPDATE {DB_TABLE_USER_SUBSCRIPTIONS}
+                SET metadata = JSON_REMOVE(
+                    IFNULL(metadata, '{{}}'), 
+                    '$.paypal_approval_required',
+                    '$.approval_url',
+                    '$.pending_plan_id',
+                    '$.approval_created_at'
+                ),
+                updated_at = NOW()
+                WHERE id = %s
+            """, (subscription_id,))
+            
+            conn.commit()
+            cursor.close()
+            conn.close()
+            
+            logger.info(f"Cleared approval metadata for subscription {subscription_id}")
+            
+        except Exception as e:
+            logger.error(f"Error clearing approval metadata: {str(e)}")
+            raise
+
+    def complete_approved_upgrade(self, subscription_id):
+        """Complete upgrade after PayPal approval"""
+        try:
+            subscription = self._get_subscription_details(subscription_id)
+            if not subscription:
+                return {'error': True, 'message': 'Subscription not found'}
+            
+            metadata = subscription.get('metadata', {})
+            if isinstance(metadata, str):
+                try:
+                    metadata = json.loads(metadata)
+                except:
+                    metadata = {}
+            
+            if not metadata.get('paypal_approval_required'):
+                return {'error': True, 'message': 'No pending approval found'}
+            
+            new_plan_id = metadata.get('pending_plan_id')
+            if not new_plan_id:
+                return {'error': True, 'message': 'No pending plan found'}
+            
+            # Complete the upgrade locally
+            self._complete_upgrade_locally(subscription_id, new_plan_id)
+            
+            # Clear approval metadata
+            self._clear_approval_metadata(subscription_id)
+            
+            # Log the completion
+            self.db.log_subscription_action(
+                subscription_id,
+                'paypal_approval_completed',
+                {
+                    'new_plan_id': new_plan_id,
+                    'completed_at': datetime.now().isoformat()
+                },
+                f"user_{subscription['user_id']}"
+            )
+            
+            return {
+                'success': True,
+                'subscription_id': subscription_id,
+                'new_plan_id': new_plan_id,
+                'message': 'Upgrade completed successfully after approval'
+            }
+            
+        except Exception as e:
+            logger.error(f"Error completing approved upgrade: {str(e)}")
+            return {'error': True, 'message': str(e)}
+
+    # Update the existing handle_proration_completion method
+    def handle_proration_completion(self, order_id):
+        """Handle completion of PayPal proration payment"""
+        try:
+            capture_result = self.paypal.capture_order_payment(order_id)
+            
+            if capture_result.get('error'):
+                return {'error': True, 'message': 'Failed to capture payment'}
+            
+            subscription = self._find_subscription_by_proration_payment(order_id)
+            if not subscription:
+                return {'error': True, 'message': 'Subscription not found'}
+            
+            # Get pending upgrade details
+            metadata = subscription.get('metadata', {})
+            if isinstance(metadata, str):
+                try:
+                    metadata = json.loads(metadata)
+                except:
+                    metadata = {}
+                    
+            pending_upgrade = metadata.get('pending_paypal_upgrade', {})
+            new_plan_id = pending_upgrade.get('new_plan_id')
+            
+            if not new_plan_id:
+                return {'error': True, 'message': 'No pending upgrade found'}
+            
+            # Update PayPal subscription
+            paypal_result = self.paypal.update_subscription_plan_only(
+                subscription['paypal_subscription_id'],
+                self._get_plan(new_plan_id)['paypal_plan_id']
+            )
+            
+            # ✅ Check for errors
+            if paypal_result.get('error'):
+                return {
+                    'error': True,
+                    'message': f'PayPal subscription update failed: {paypal_result.get("message")}'
+                }
+            
+            # ✅ Handle approval requirement
+            if paypal_result.get('requires_approval'):
+                # Store approval requirement in metadata
+                self._store_approval_requirement(
+                    subscription['id'], 
+                    new_plan_id, 
+                    paypal_result.get('approval_url')
+                )
+                
+                logger.info(f"PayPal approval required for subscription {subscription['id']}")
+                
+                return {
+                    'success': True,
+                    'requires_additional_approval': True,
+                    'approval_url': paypal_result.get('approval_url'),
+                    'subscription_id': subscription['id'],
+                    'message': 'Proration payment completed. Please complete the subscription authorization on PayPal to finalize your upgrade.',
+                    'next_step': 'approval_required'
+                }
+            
+            # ✅ PayPal update succeeded immediately
+            self._complete_upgrade_locally(subscription['id'], new_plan_id)
+            
+            # Log the completion
+            self.db.log_subscription_action(
+                subscription['id'],
+                'proration_upgrade_completed',
+                {
+                    'old_plan': subscription['plan_id'],
+                    'new_plan_id': new_plan_id,
+                    'upgrade_type': 'immediate'
+                },
+                f"user_{subscription['user_id']}"
+            )
+            
+            return {
+                'success': True,
+                'subscription_id': subscription['id'],
+                'new_plan_id': new_plan_id,
+                'message': 'Upgrade completed successfully!'
+            }
+            
+        except Exception as e:
+            logger.error(f"Error handling PayPal proration completion: {str(e)}")
+            return {'error': True, 'message': str(e)}
+
+    # Add the missing webhook handler
+    def _handle_payment_capture_completed(self, payload):
+        """Handle PAYMENT.CAPTURE.COMPLETED webhook - for one-time payments like proration"""
+        try:
+            resource = payload.get('resource', {})
+            payment_id = resource.get('id')
+            
+            logger.info(f"Processing PAYMENT.CAPTURE.COMPLETED: {payment_id}")
+            
+            # Extract order ID from supplementary data
+            supplementary_data = resource.get('supplementary_data', {})
+            related_ids = supplementary_data.get('related_ids', {})
+            order_id = related_ids.get('order_id')
+            
+            if not order_id:
+                logger.warning(f"No order_id found in payment capture {payment_id}")
+                return {'status': 'ignored', 'reason': 'no_order_id'}
+            
+            # Check if this is a proration payment
+            subscription = self._find_subscription_by_proration_payment(order_id)
+            
+            if subscription:
+                # This is a proration payment - create invoice
+                logger.info(f"Found proration payment for subscription {subscription['id']}")
+                
+                # Create invoice for proration payment
+                invoice_id = self._create_proration_invoice(
+                    subscription, resource, order_id
+                )
+                
+                return {
+                    'success': True,
+                    'subscription_id': subscription['id'],
+                    'invoice_id': invoice_id,
+                    'payment_id': payment_id,
+                    'payment_type': 'proration',
+                    'message': 'Proration payment invoice created'
+                }
+            else:
+                # This is a standalone one-time payment
+                logger.info(f"No subscription found for order {order_id} - treating as standalone payment")
+                return {
+                    'success': True,
+                    'payment_id': payment_id,
+                    'order_id': order_id,
+                    'payment_type': 'standalone'
+                }
+                
+        except Exception as e:
+            logger.error(f"Error handling payment capture completed: {str(e)}")
+            logger.error(traceback.format_exc())
+            return {'status': 'error', 'message': str(e)}
+
+    def _create_proration_invoice(self, subscription, resource, order_id):
+        """Create invoice for proration payment"""
+        try:
+            conn = self.db.get_connection()
+            cursor = conn.cursor()
+            
+            invoice_id = generate_id('inv_')
+            payment_id = resource.get('id')
+            amount = float(resource.get('amount', {}).get('value', 0))
+            currency = resource.get('amount', {}).get('currency_code', 'USD')
+            
+            cursor.execute("""
+                INSERT INTO subscription_invoices
+                (id, subscription_id, user_id, paypal_payment_id, amount, currency,
+                status, payment_method, invoice_date, paid_at, app_id)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, NOW(), NOW(), %s)
+            """, (
+                invoice_id,
+                subscription['id'],
+                subscription['user_id'],
+                payment_id,
+                amount,
+                currency,
+                'paid',
+                'paypal_proration',
+                subscription['app_id']
+            ))
+            
+            conn.commit()
+            cursor.close()
+            conn.close()
+            
+            logger.info(f"Created proration invoice {invoice_id} for payment {payment_id}")
+            return invoice_id
+            
+        except Exception as e:
+            logger.error(f"Error creating proration invoice: {str(e)}")
+            raise
+
+    # Update the existing _handle_paypal_webhook method
     def _handle_paypal_webhook(self, event_type, payload):
         """Route PayPal webhook events to appropriate handlers"""
         if event_type == 'BILLING.SUBSCRIPTION.CREATED':
@@ -285,6 +595,8 @@ class PayPalService(BaseSubscriptionService):
             return self._handle_subscription_activated(payload)
         elif event_type == 'PAYMENT.SALE.COMPLETED':
             return self._handle_payment_sale_completed(payload)
+        elif event_type == 'PAYMENT.CAPTURE.COMPLETED':  # ✅ ADD THIS LINE
+            return self._handle_payment_capture_completed(payload)
         elif event_type == 'BILLING.SUBSCRIPTION.PAYMENT.FAILED':
             return self._handle_subscription_payment_failed(payload)
         elif event_type == 'BILLING.SUBSCRIPTION.CANCELLED':
@@ -674,7 +986,6 @@ class PayPalService(BaseSubscriptionService):
             logger.error(traceback.format_exc())
             return {'status': 'error', 'message': str(e)}
 
-    # Additional webhook handlers for cancelled/suspended
     def _handle_subscription_cancelled(self, payload):
         """Handle BILLING.SUBSCRIPTION.CANCELLED"""
         try:
@@ -683,18 +994,39 @@ class PayPalService(BaseSubscriptionService):
             
             subscription = self._get_subscription_by_paypal_id(paypal_subscription_id)
             if subscription:
-                self._update_subscription_status_by_paypal_id(
-                    paypal_subscription_id, 'cancelled', resource
-                )
+                # ✅ CHANGE: Don't update status to cancelled, just log the event
+                # Old code: self._update_subscription_status_by_paypal_id(paypal_subscription_id, 'cancelled', resource)
                 
+                # Instead: Just update metadata to track PayPal cancellation confirmation
+                conn = self.db.get_connection()
+                cursor = conn.cursor()
+                
+                cursor.execute(f"""
+                    UPDATE {DB_TABLE_USER_SUBSCRIPTIONS}
+                    SET metadata = JSON_MERGE_PATCH(IFNULL(metadata, '{{}}'), %s),
+                        updated_at = NOW()
+                    WHERE paypal_subscription_id = %s
+                """, (json.dumps({
+                    'paypal_cancellation_confirmed': True,
+                    'paypal_cancelled_at': datetime.now().isoformat(),
+                    'webhook_received': True
+                }), paypal_subscription_id))
+                
+                conn.commit()
+                cursor.close()
+                conn.close()
+                
+                # Log the cancellation confirmation
                 self.db.log_subscription_action(
                     subscription['id'],
-                    'cancelled',
+                    'paypal_cancellation_confirmed',
                     {'paypal_subscription_id': paypal_subscription_id, 'event_data': resource},
                     'paypal_webhook'
                 )
+                
+                logger.info(f"PayPal cancellation confirmed (webhook): {paypal_subscription_id} - status remains active until period end")
             
-            return {'status': 'success', 'message': 'Cancellation processed'}
+            return {'status': 'success', 'message': 'Cancellation confirmed, access continues until period end'}
             
         except Exception as e:
             logger.error(f"Error handling subscription cancelled: {str(e)}")
@@ -1424,52 +1756,6 @@ class PayPalService(BaseSubscriptionService):
         except Exception as e:
             logger.error(f"Error storing pending upgrade: {str(e)}")
 
-    def handle_proration_completion(self, order_id):
-        """Handle completion of PayPal proration payment"""
-        try:
-            capture_result = self.paypal.capture_order_payment(order_id)
-            
-            if capture_result.get('error'):
-                return {'error': True, 'message': 'Failed to capture payment'}
-            
-            subscription = self._find_subscription_by_proration_payment(order_id)
-            if not subscription:
-                return {'error': True, 'message': 'Subscription not found'}
-            
-            pending_upgrade = subscription.get('metadata', {})
-            if isinstance(pending_upgrade, str):
-                try:
-                    pending_upgrade = json.loads(pending_upgrade)
-                except:
-                    pending_upgrade = {}
-                    
-            upgrade_details = pending_upgrade.get('pending_paypal_upgrade', {})
-            new_plan_id = upgrade_details.get('new_plan_id')
-            
-            if not new_plan_id:
-                return {'error': True, 'message': 'No pending upgrade found'}
-            
-            # Update PayPal subscription
-            paypal_result = self.paypal.update_subscription_plan_only(
-                subscription['paypal_subscription_id'],
-                self._get_plan(new_plan_id)['paypal_plan_id']
-            )
-            
-            # Update local database and set full quota
-            self._update_subscription_plan(subscription['id'], new_plan_id)
-            self.initialize_resource_quota(subscription['user_id'], subscription['id'], subscription['app_id'])
-            
-            # Clear pending upgrade
-            self._clear_pending_upgrade(subscription['id'])
-            
-            return {
-                'success': True,
-                'message': 'Proration payment completed, subscription upgraded'
-            }
-            
-        except Exception as e:
-            logger.error(f"Error handling PayPal proration completion: {str(e)}")
-            return {'error': True, 'message': str(e)}
 
     def _find_subscription_by_proration_payment(self, order_id):
         """Find subscription with pending upgrade matching payment ID"""
