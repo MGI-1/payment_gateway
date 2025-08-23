@@ -439,6 +439,102 @@ def init_payment_routes(app, payment_service, paypal_service=None):
             error_message = "Cancellation%20processing%20failed.%20Please%20contact%20support%20if%20needed."
             return redirect(f"{get_frontend_url()}/subscription-dashboard?error={error_message}")
     
+    # Add these new routes to your routes.py file
+
+    @payment_bp.route('/paypal-proration-complete', methods=['GET'])
+    def paypal_proration_complete():
+        """Handle PayPal proration payment user redirects after payment completion"""
+        try:
+            payment_type = request.args.get('type')
+            token = request.args.get('token')
+            payer_id = request.args.get('PayerID')
+            
+            logger.info(f"PayPal proration completion: type={payment_type}, token={token}, payer_id={payer_id}")
+            
+            if payment_type == 'proration' and token:
+                # Process the proration payment completion
+                result = paypal_service.handle_proration_completion(token)
+                
+                if result.get('success'):
+                    if result.get('requires_additional_approval'):
+                        # ✅ Redirect to PayPal for additional approval
+                        approval_url = result.get('approval_url')
+                        logger.info(f"Redirecting to PayPal approval: {approval_url}")
+                        return redirect(approval_url)
+                    else:
+                        # ✅ Upgrade completed successfully
+                        logger.info(f"Proration payment completed successfully: {token}")
+                        return redirect(f"{get_frontend_url()}/subscription-dashboard?upgrade=success&message=Upgrade completed successfully!")
+                else:
+                    error_msg = result.get('message', 'Unknown error occurred')
+                    logger.error(f"Proration payment failed: {token}, error: {error_msg}")
+                    return redirect(f"{get_frontend_url()}/subscription-dashboard?upgrade=error&message={error_msg}")
+            
+            elif payment_type == 'proration_cancel':
+                logger.info(f"Proration payment cancelled: {token}")
+                return redirect(f"{get_frontend_url()}/subscription-dashboard?upgrade=cancelled&message=Upgrade payment was cancelled. Your current plan remains active.")
+            
+            else:
+                # Generic PayPal payment completion
+                logger.info(f"Generic PayPal payment completion: type={payment_type}")
+                return redirect(f"{get_frontend_url()}/subscription-dashboard?payment=success&message=PayPal payment completed successfully!")
+            
+        except Exception as e:
+            logger.error(f"Error in PayPal proration completion: {str(e)}")
+            logger.error(traceback.format_exc())
+            return redirect(f"{get_frontend_url()}/subscription-dashboard?upgrade=error&message=Payment processing failed. Please contact support if payment was deducted.")
+
+    @payment_bp.route('/paypal-approval-complete', methods=['GET'])
+    def paypal_approval_complete():
+        """Handle completion of PayPal subscription approval"""
+        try:
+            subscription_id = request.args.get('subscription_id')
+            token = request.args.get('token')
+            
+            logger.info(f"PayPal approval completion: subscription_id={subscription_id}, token={token}")
+            
+            if subscription_id:
+                # Complete the upgrade now that approval is done
+                result = paypal_service.complete_approved_upgrade(subscription_id)
+                
+                if result.get('success'):
+                    logger.info(f"Approval completed successfully for subscription {subscription_id}")
+                    return redirect(f"{get_frontend_url()}/subscription-dashboard?upgrade=success&message=Upgrade completed successfully! Your subscription has been updated.")
+                else:
+                    error_msg = result.get('message', 'Unknown error occurred')
+                    logger.error(f"Approval completion failed for {subscription_id}: {error_msg}")
+                    return redirect(f"{get_frontend_url()}/subscription-dashboard?upgrade=error&message={error_msg}")
+            
+            logger.warning("PayPal approval completion called without subscription_id")
+            return redirect(f"{get_frontend_url()}/subscription-dashboard?upgrade=error&message=Invalid approval completion")
+            
+        except Exception as e:
+            logger.error(f"Error in PayPal approval completion: {str(e)}")
+            logger.error(traceback.format_exc())
+            return redirect(f"{get_frontend_url()}/subscription-dashboard?upgrade=error&message=Approval processing failed. Please contact support.")
+
+    @payment_bp.route('/paypal-approval-cancel', methods=['GET'])
+    def paypal_approval_cancel():
+        """Handle PayPal subscription approval cancellation"""
+        try:
+            subscription_id = request.args.get('subscription_id')
+            
+            logger.info(f"PayPal approval cancelled: subscription_id={subscription_id}")
+            
+            if subscription_id:
+                # Clear the approval metadata since user cancelled
+                try:
+                    paypal_service._clear_approval_metadata(subscription_id)
+                    logger.info(f"Cleared approval metadata for cancelled approval: {subscription_id}")
+                except Exception as e:
+                    logger.error(f"Error clearing approval metadata: {str(e)}")
+            
+            return redirect(f"{get_frontend_url()}/subscription-dashboard?upgrade=cancelled&message=Subscription authorization was cancelled. Your current plan remains active.")
+            
+        except Exception as e:
+            logger.error(f"Error handling PayPal approval cancel: {str(e)}")
+            return redirect(f"{get_frontend_url()}/subscription-dashboard?upgrade=error&message=Cancellation processing failed.")
+
     @payment_bp.route('/razorpay-payment-complete', methods=['GET'])
     def razorpay_payment_complete():
         """Handle Razorpay payment link user redirects after payment completion"""
@@ -533,7 +629,7 @@ def init_payment_routes(app, payment_service, paypal_service=None):
         except Exception as e:
             logger.error(f"Error in PayPal proration cancellation: {str(e)}")
             return redirect(f"{get_frontend_url()}/subscription-dashboard?payment=error&message=Cancellation processing failed.'")
-                
+                    
     @payment_bp.route('/upgrade', methods=['POST'])
     def upgrade_subscription():
         """Handle upgrade with gateway parameter from frontend"""
@@ -551,6 +647,12 @@ def init_payment_routes(app, payment_service, paypal_service=None):
             if not all([user_id, subscription_id, new_plan_id, current_gateway]):
                 logger.info("[UPGRADE] Missing required parameters")
                 return jsonify({'error': 'User ID, subscription ID, new plan ID, and current gateway are required'}), 400
+            
+            # ✅ ONLY CHANGE: Convert to internal ID
+            plan_record = payment_service._get_plan(new_plan_id)
+            if not plan_record:
+                return jsonify({'error': 'Plan not found'}), 400
+            internal_plan_id = plan_record['id']
             
             # Validate gateway parameter
             if current_gateway not in ['paypal', 'razorpay']:
@@ -577,7 +679,7 @@ def init_payment_routes(app, payment_service, paypal_service=None):
                 if not usage_data:
                     raise ValueError("Usage data not found")
 
-                # ✅ DEBUG: Log the actual usage data
+                # âœ… DEBUG: Log the actual usage data
                 logger.info("=== BILLING DEBUG ===")
                 logger.info(f"usage_data type: {type(usage_data)}")
                 logger.info(f"usage_data keys: {list(usage_data.keys()) if isinstance(usage_data, dict) else 'Not a dict'}")
@@ -586,7 +688,7 @@ def init_payment_routes(app, payment_service, paypal_service=None):
                 logger.info(f"Full usage_data: {usage_data}")
                 logger.info("====================")
 
-                # ✅ Method 1: Check using usage_data billing period
+                # âœ… Method 1: Check using usage_data billing period
                 billing_period_end = usage_data.get('billing_period_end')
                 logger.info(f"[DEBUG] Raw billing_period_end: {billing_period_end}")
 
@@ -625,7 +727,7 @@ def init_payment_routes(app, payment_service, paypal_service=None):
                 else:
                     logger.warning(f"[DEBUG] No billing_period_end found in usage_data, trying PayPal API")
 
-                # ✅ Method 2: Check PayPal subscription directly if usage_data doesn't have billing info
+                # âœ… Method 2: Check PayPal subscription directly if usage_data doesn't have billing info
                 paypal_subscription_id = subscription.get('paypal_subscription_id')
                 logger.info(f"[DEBUG] PayPal subscription ID: {paypal_subscription_id}")
                 
@@ -688,7 +790,7 @@ def init_payment_routes(app, payment_service, paypal_service=None):
                 # Use PayPal service for upgrade
                 logger.info("[UPGRADE] Calling paypal_service.handle_upgrade")
                 result = paypal_service.handle_upgrade(
-                    user_id, subscription_id, new_plan_id, app_id, 
+                    user_id, subscription_id, internal_plan_id, app_id,  # ← Changed to internal_plan_id
                     billing_cycle_info, resource_info
                 )
                 logger.info("[UPGRADE] PayPal service returned successfully")
@@ -696,10 +798,10 @@ def init_payment_routes(app, payment_service, paypal_service=None):
             elif current_gateway == 'razorpay':
                 # Use main payment service for Razorpay
                 logger.info("[UPGRADE] Calling payment_service.upgrade_subscription")
-                result = payment_service.upgrade_subscription(user_id, subscription_id, new_plan_id, app_id)
+                result = payment_service.upgrade_subscription(user_id, subscription_id, internal_plan_id, app_id)  # ← Changed to internal_plan_id
                 logger.info("[UPGRADE] Payment service returned successfully")
             
-            # ✅ ADD COMPREHENSIVE RESULT LOGGING
+            # âœ… ADD COMPREHENSIVE RESULT LOGGING
             logger.info("=== UPGRADE ROUTE RESPONSE DEBUG ===")
             logger.info(f"Route result type: {type(result)}")
             logger.info(f"Route result keys: {list(result.keys()) if isinstance(result, dict) else 'Not a dict'}")
