@@ -1825,7 +1825,6 @@ class PaymentService(BaseSubscriptionService):
             logger.error(f"Error in INR upgrade with payment method: {str(e)}")
             raise
 
-
     def _create_subscription_with_specific_offer(self, user_id, plan_id, app_id, offer_id, payment_method):
         """Create subscription with specific Razorpay offer ID"""
         try:
@@ -2044,54 +2043,32 @@ class PaymentService(BaseSubscriptionService):
                 app_id
             )
 
-            # Phase 3: Route to appropriate upgrade handler based on currency and gateway
-            currency, gateway = self._get_currency_and_gateway_from_plan(new_plan)
-            
-            logger.info(f"[UPGRADE] Currency: {currency}, Gateway: {gateway}")
+            # Phase 3: Route to appropriate upgrade handler based on currency
+            currency = new_plan.get('currency')
 
+            if currency not in ['INR', 'USD']:
+                raise ValueError({
+                    'error': True,
+                    'error_type': 'unsupported_currency',
+                    'message': 'Unsupported currency. Please contact support.',
+                    'action_required': 'contact_support'
+                })
+
+            logger.info(f"[UPGRADE] Currency: {currency}, Gateway: razorpay")
+            
             if currency == 'INR':
                 return self._handle_inr_upgrade_with_payment_method(
                     subscription, current_plan, new_plan, app_id, 
                     billing_cycle_info, resource_info
                 )
             else:  # USD
-                if gateway == 'razorpay':
                     return self._handle_usd_razorpay_upgrade(
                         subscription, current_plan, new_plan, app_id,
                         billing_cycle_info, resource_info
                     )
-                elif gateway == 'paypal':
-                    return self._handle_usd_paypal_upgrade(
-                        subscription, current_plan, new_plan, app_id,
-                        billing_cycle_info, resource_info
-                    )
-                else:
-                    raise ValueError(f"Unsupported gateway for USD: {gateway}")
-
         except Exception as e:
             logger.error(f"[UPGRADE] Service exception: {str(e)}")
             raise
-
-    def _get_currency_and_gateway_from_plan(self, plan):
-        """Determine currency and preferred gateway from plan"""
-        currency = plan.get('currency')
-        
-        if currency not in ['INR', 'USD']:
-            raise ValueError({
-                'error': True,
-                'error_type': 'unsupported_currency',
-                'message': 'Unsupported currency. Please contact support.',
-                'action_required': 'contact_support'
-            })
-        
-        # Use parse_json_field to safely handle JSON conversion
-        payment_gateways = parse_json_field(plan.get('payment_gateways'), ['razorpay'])
-        
-        if currency == 'INR':
-            return 'INR', 'razorpay'
-        else:  # USD
-            preferred_gateway = payment_gateways[0] if payment_gateways else 'paypal'
-            return 'USD', preferred_gateway
 
     def _handle_usd_razorpay_upgrade(self, subscription, current_plan, new_plan, app_id, billing_cycle_info, resource_info):
         """Handle USD Razorpay upgrades"""
@@ -2124,9 +2101,18 @@ class PaymentService(BaseSubscriptionService):
         try:
             razorpay_subscription_id = subscription['razorpay_subscription_id']
             
+            # Get the new plan's Razorpay plan ID
+            new_plan = self._get_plan(new_plan_id)
+            if not new_plan:
+                raise ValueError(f"Plan {new_plan_id} not found")
+            
+            razorpay_plan_id = new_plan.get('razorpay_plan_id')
+            if not razorpay_plan_id:
+                raise ValueError(f"Plan {new_plan_id} missing Razorpay plan ID")
+            
             # Razorpay USD allows plan changes
             response = self.razorpay.client.subscription.edit(razorpay_subscription_id, {
-                'plan_id': new_plan_id
+                'plan_id': razorpay_plan_id
             })
             
             if 'error' in response:

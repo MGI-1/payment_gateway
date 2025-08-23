@@ -262,6 +262,20 @@ class RazorpayProvider:
             }
         
         try:
+            # Get plan details to extract Razorpay plan ID
+            from ..base_subscription_service import BaseSubscriptionService
+            base_service = BaseSubscriptionService()
+            plan = base_service._get_plan(plan_id)
+            
+            if not plan:
+                return {
+                    'error': True,
+                    'message': f'Plan {plan_id} not found'
+                }
+            
+            # Get Razorpay plan ID from the plan
+            razorpay_plan_id = plan.get('razorpay_plan_id') 
+            
             user_id = customer_info.get('user_id')
             
             notes = {
@@ -274,7 +288,7 @@ class RazorpayProvider:
                 notes.update(additional_notes)
             
             subscription_data = {
-                'plan_id': plan_id,
+                'plan_id': razorpay_plan_id,  # Use Razorpay plan ID
                 'customer_notify': True,
                 'quantity': 1,
                 'total_count': 12,
@@ -282,7 +296,7 @@ class RazorpayProvider:
                 'offer_id': offer_id  # Use the specific offer ID
             }
             
-            logger.info(f"Creating Razorpay subscription with specific offer: {offer_id}")
+            logger.info(f"Creating Razorpay subscription with specific offer: {offer_id} for plan: {razorpay_plan_id}")
             razorpay_subscription = self.client.subscription.create(subscription_data, timeout=60)
             
             return {
@@ -291,7 +305,6 @@ class RazorpayProvider:
                 'short_url': razorpay_subscription.get('short_url'),
                 'offer_id_used': offer_id,
                 'data': razorpay_subscription
-                
             }
             
         except Exception as e:
