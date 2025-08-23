@@ -576,42 +576,6 @@ def init_payment_routes(app, payment_service, paypal_service=None):
             logger.error(traceback.format_exc())
             return redirect(f"{get_frontend_url()}/subscription-dashboard?error=Payment completion processing failed. Please contact support if payment was deducted.'")
 
-    @payment_bp.route('/paypal-proration-complete', methods=['GET'])
-    def paypal_proration_complete():
-        """Handle PayPal proration payment user redirects after payment completion"""
-        try:
-            payment_type = request.args.get('type')
-            token = request.args.get('token')
-            payer_id = request.args.get('PayerID')
-            
-            logger.info(f"PayPal proration completion: type={payment_type}, token={token}, payer_id={payer_id}")
-            
-            if payment_type == 'proration' and token:
-                # Process the proration payment completion
-                result = paypal_service.handle_proration_completion(token)
-                
-                if result.get('success'):
-                    logger.info(f"Proration payment completed successfully: {token}")
-                    return redirect(f"{get_frontend_url()}/subscription-dashboard?upgrade=success&message=Your subscription has been upgraded successfully! Proration payment completed.'")
-                else:
-                    error_msg = result.get('message', 'Unknown error occurred')
-                    logger.error(f"Proration payment failed: {token}, error: {error_msg}")
-                    return redirect(f"{get_frontend_url()}/subscription-dashboard?upgrade=error&message=There was an issue processing your upgrade payment: {error_msg}'")
-            
-            elif payment_type == 'proration_cancel':
-                logger.info(f"Proration payment cancelled: {token}")
-                return redirect(f"{get_frontend_url()}/subscription-dashboard?upgrade=cancelled&message=Upgrade payment was cancelled. Your current plan remains active.'")
-            
-            else:
-                # Generic PayPal payment completion
-                logger.info(f"Generic PayPal payment completion: type={payment_type}")
-                return redirect(f"{get_frontend_url()}/subscription-dashboard?payment=success&message=PayPal payment completed successfully!'")
-            
-        except Exception as e:
-            logger.error(f"Error in PayPal proration completion: {str(e)}")
-            logger.error(traceback.format_exc())
-            return redirect(f"{get_frontend_url()}/subscription-dashboard?upgrade=error&message=Payment processing failed. Please contact support if payment was deducted.'")
-
     @payment_bp.route('/paypal-proration-cancel', methods=['GET'])
     def paypal_proration_cancel():
         """Handle PayPal proration payment cancellation redirects"""
