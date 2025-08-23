@@ -488,21 +488,28 @@ def init_payment_routes(app, payment_service, paypal_service=None):
     def paypal_approval_complete():
         """Handle completion of PayPal subscription approval"""
         try:
-            subscription_id = request.args.get('subscription_id')
+            subscription_id = request.args.get('subscription_id')  # This is PayPal subscription ID
             token = request.args.get('token')
             
             logger.info(f"PayPal approval completion: subscription_id={subscription_id}, token={token}")
             
             if subscription_id:
-                # Complete the upgrade now that approval is done
-                result = paypal_service.complete_approved_upgrade(subscription_id)
+                # ✅ FIX: Find subscription by PayPal ID, not internal ID
+                subscription = paypal_service._get_subscription_by_paypal_id(subscription_id)
+                
+                if not subscription:
+                    logger.error(f"Subscription not found by PayPal ID: {subscription_id}")
+                    return redirect(f"{get_frontend_url()}/subscription-dashboard?upgrade=error&message=Subscription not found")
+                
+                # Complete the upgrade using internal subscription ID
+                result = paypal_service.complete_approved_upgrade(subscription['id'])  # Use internal ID
                 
                 if result.get('success'):
-                    logger.info(f"Approval completed successfully for subscription {subscription_id}")
+                    logger.info(f"Approval completed successfully for subscription {subscription['id']}")
                     return redirect(f"{get_frontend_url()}/subscription-dashboard?upgrade=success&message=Upgrade completed successfully! Your subscription has been updated.")
                 else:
                     error_msg = result.get('message', 'Unknown error occurred')
-                    logger.error(f"Approval completion failed for {subscription_id}: {error_msg}")
+                    logger.error(f"Approval completion failed for {subscription['id']}: {error_msg}")
                     return redirect(f"{get_frontend_url()}/subscription-dashboard?upgrade=error&message={error_msg}")
             
             logger.warning("PayPal approval completion called without subscription_id")
