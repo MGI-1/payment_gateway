@@ -1,37 +1,25 @@
--- MySQL dump 10.13  Distrib 8.0.42, for Win64 (x86_64)
---
--- Host: localhost    Database: battlecards
--- ------------------------------------------------------
--- Server version	8.0.40
-
-/*!40101 SET @OLD_CHARACTER_SET_CLIENT=@@CHARACTER_SET_CLIENT */;
-/*!40101 SET @OLD_CHARACTER_SET_RESULTS=@@CHARACTER_SET_RESULTS */;
-/*!40101 SET @OLD_COLLATION_CONNECTION=@@COLLATION_CONNECTION */;
-/*!50503 SET NAMES utf8 */;
-/*!40103 SET @OLD_TIME_ZONE=@@TIME_ZONE */;
-/*!40103 SET TIME_ZONE='+00:00' */;
-/*!40014 SET @OLD_UNIQUE_CHECKS=@@UNIQUE_CHECKS, UNIQUE_CHECKS=0 */;
-/*!40014 SET @OLD_FOREIGN_KEY_CHECKS=@@FOREIGN_KEY_CHECKS, FOREIGN_KEY_CHECKS=0 */;
-/*!40101 SET @OLD_SQL_MODE=@@SQL_MODE, SQL_MODE='NO_AUTO_VALUE_ON_ZERO' */;
-/*!40111 SET @OLD_SQL_NOTES=@@SQL_NOTES, SQL_NOTES=0 */;
-
---
--- Dumping data for table `subscription_plans`
---
-
 LOCK TABLES `subscription_plans` WRITE;
-/*!40000 ALTER TABLE `subscription_plans` DISABLE KEYS */;
-INSERT INTO `subscription_plans` VALUES ('P-00B61108MC2877013NBPEHZA','Gold','Standard access to MarketFit features',14.95,'USD','month',1,'{\"document_pages\": 1000, \"perplexity_requests\": 10}','marketfit','P-00B61108MC2877013NBPEHZA',1,'2025-06-06 20:34:23','plan_Qowq5zgTon5evd','international',CAST('["paypal", "razorpay"]' AS JSON)),('P-4R292538MH3548302NBPL3KY','Gold','Standard access to SalesWit features',14.95,'USD','month',1,'{\"requests\": 10}','saleswit','P-4R292538MH3548302NBPL3KY',1,'2025-06-06 20:34:23','plan_QowqWo6rb1w47S','international',CAST('["paypal", "razorpay"]' AS JSON)),('P-50Y28795S1820243BNBPEG6A','Platinum','Standard access to MarketFit features',17.95,'USD','year',1,'{\"document_pages\": 3000, \"perplexity_requests\": 20}','marketfit','P-50Y28795S1820243BNBPEG6A',1,'2025-06-06 20:34:23','plan_QoworJ8x94duYC','international',CAST('["paypal", "razorpay"]' AS JSON)),('P-5EN298909A890245WNBPL34Y','Platinum','Standard access to SalesWit features',17.95,'USD','year',1,'{\"requests\": 20}','saleswit','P-5EN298909A890245WNBPL34Y',1,'2025-06-06 20:34:23','plan_QowraUbFe1x95j','international',CAST('["paypal", "razorpay"]' AS JSON)),('P-5H619884MX0105421NBPEF6A','Gold','Standard access to MarketFit features',11.95,'USD','year',1,'{\"document_pages\": 1000, \"perplexity_requests\": 10}','marketfit','P-5H619884MX0105421NBPEF6A',1,'2025-06-06 20:34:23','plan_QoslGn6XUcNbMp','international',CAST('["paypal", "razorpay"]' AS JSON)),('P-7KJ31869GL5164517NBPL4NY','Platinum','Standard access to SalesWit features',21.95,'USD','month',1,'{\"requests\": 20}','saleswit','P-7KJ31869GL5164517NBPL4NY',1,'2025-06-06 20:34:23','plan_QowruSfuOXhKFS','international',CAST('["paypal", "razorpay"]' AS JSON)),('P-7YE21141N96098028NBPL2SY','Gold','Standard access to SalesWit features',11.95,'USD','year',1,'{\"requests\": 10}','saleswit','P-7YE21141N96098028NBPL2SY',1,'2025-06-06 20:34:23','plan_Qowr90cfBbGmbk','international',CAST('["paypal", "razorpay"]' AS JSON)),('P-9WD9503571007053SNBPEIHY','Platinum','Standard access to MarketFit features',21.95,'USD','month',1,'{\"document_pages\": 3000, \"perplexity_requests\": 20}','marketfit','P-9WD9503571007053SNBPEIHY',1,'2025-06-06 20:34:23','plan_QowpYMCuwPQrws','international',CAST('["paypal", "razorpay"]' AS JSON)),('plan_free_marketfit','Free Plan','Basic access to MarketFit features',0.00,'INR','month',1,'{\"document_pages\": 15, \"perplexity_requests\": 2}','marketfit',NULL,1,'2025-06-06 20:31:54',NULL,'domestic',NULL),('plan_free_saleswit','Free Plan','Basic access to SalesWit features',0.00,'INR','month',1,'{\"requests\": 3}','saleswit',NULL,1,'2025-06-06 20:31:54',NULL,'domestic',NULL),('plan_Qf7Jas8ayXEcha','Gold','Standard access to MarketFit features',1000.00,'INR','year',1,'{\"document_pages\": 1000, \"perplexity_requests\": 10}','marketfit',NULL,1,'2025-06-06 20:34:23','plan_Qf7Jas8ayXEcha','domestic',CAST('["razorpay"]' AS JSON)),('plan_Qm7TSBmLqQZnvp','Platinum','Standard access to MarketFit features',1500.00,'INR','year',1,'{\"document_pages\": 3000, \"perplexity_requests\": 20}','marketfit',NULL,1,'2025-06-06 20:34:23','plan_Qm7TSBmLqQZnvp','domestic',CAST('["razorpay"]' AS JSON)),('plan_Qm7UsVIdJQWyNU','Gold','Standard access to MarketFit features',1250.00,'INR','month',1,'{\"document_pages\": 1000, \"perplexity_requests\": 10}','marketfit',NULL,1,'2025-06-06 20:34:23','plan_Qm7UsVIdJQWyNU','domestic',CAST('["razorpay"]' AS JSON)),('plan_Qm7UW983v043Oj','Platinum','Standard access to MarketFit features',1830.00,'INR','month',1,'{\"document_pages\": 3000, \"perplexity_requests\": 20}','marketfit',NULL,1,'2025-06-06 20:34:23','plan_Qm7UW983v043Oj','domestic',CAST('["razorpay"]' AS JSON)),('plan_QmHFZ8Ho9ikUH3','Gold','Standard access to SalesWit features',1000.00,'INR','year',1,'{\"requests\": 10}','saleswit',NULL,1,'2025-06-06 20:34:23','plan_QmHFZ8Ho9ikUH3','domestic',CAST('["razorpay"]' AS JSON)),('plan_QmHGOEn5TwRA1V','Gold','Standard access to SalesWit features',1250.00,'INR','month',1,'{\"requests\": 10}','saleswit',NULL,1,'2025-06-06 20:34:23','plan_QmHGOEn5TwRA1V','domestic',CAST('["razorpay"]' AS JSON)),('plan_QmHHUgzbNmRQDM','Platinum','Standard access to SalesWit features',1830.00,'INR','month',1,'{\"requests\": 20}','saleswit',NULL,1,'2025-06-06 20:34:23','plan_QmHHUgzbNmRQDM','domestic',CAST('["razorpay"]' AS JSON)),('plan_QmHIBcQ9UaNcVH','Platinum','Standard access to SalesWit features',1500.00,'INR','year',1,'{\"requests\": 20}','saleswit',NULL,1,'2025-06-06 20:34:23','plan_QmHIBcQ9UaNcVH','domestic',CAST('["razorpay"]' AS JSON));
-/*!40000 ALTER TABLE `subscription_plans` ENABLE KEYS */;
+
+INSERT INTO `subscription_plans` (
+  `id`, `name`, `description`, `amount`, `currency`, `interval`, `interval_count`, 
+  `features`, `app_id`, `paypal_plan_id`, `is_active`, `created_at`, `razorpay_plan_id`, 
+  `plan_type`, `payment_gateways`
+) VALUES 
+('P-4N115743P3276984DNCU64FA', 'Gold', 'Gold access to MarketFit', 143.40, 'USD', 'year', 1, '{"document_pages": 350, "perplexity_requests": 10}', 'marketfit', 'P-4N115743P3276984DNCU64FA', 1, '2025-06-06 20:34:23', 'plan_R7wisIey0wboxS', 'international', '["paypal", "razorpay"]'),
+('P-67B55730S0107231FNCU63HI', 'Gold', 'Gold access to MarketFit', 14.95, 'USD', 'month', 1, '{"document_pages": 350, "perplexity_requests": 10}', 'marketfit', 'P-67B55730S0107231FNCU63HI', 1, '2025-06-06 20:34:23', 'plan_R7wgLDdI6fS84Y', 'international', '["paypal", "razorpay"]'),
+('P-7SU50032PW000311GNCU7CPI', 'Platinum', 'Platinum access to MarketFit', 215.40, 'USD', 'year', 1, '{"document_pages": 800, "perplexity_requests": 20}', 'marketfit', 'P-7SU50032PW000311GNCU7CPI', 1, '2025-06-06 20:34:23', 'plan_R7wiCVwjGqDBsd', 'international', '["paypal", "razorpay"]'),
+('P-3JF948768R0522941NCU7BSQ', 'Platinum', 'Platinum access to MarketFit', 21.95, 'USD', 'month', 1, '{"document_pages": 800, "perplexity_requests": 20}', 'marketfit', 'P-3JF948768R0522941NCU7BSQ', 1, '2025-06-06 20:34:23', 'plan_R7whBuES2qsXNT', 'international', '["paypal", "razorpay"]'),
+('plan_R7wc1HX1Ec7Kjt', 'Gold', 'Gold access to MarketFit', 1199.00, 'INR', 'month', 1, '{"document_pages": 350, "perplexity_requests": 10}', 'marketfit', NULL, 1, '2025-06-06 20:34:23', 'plan_R7wc1HX1Ec7Kjt', 'domestic', '["razorpay"]'),
+('plan_R7wcATJQzoyhkb', 'Gold', 'Gold access to SalesWit', 1199.00, 'INR', 'month', 1, '{"requests": 10}', 'saleswit', NULL, 1, '2025-06-06 20:34:23', 'plan_R7wcATJQzoyhkb', 'domestic', '["razorpay"]'),
+('plan_R7wcSpKqLkC6Tg', 'Platinum', 'Platinum access to SalesWit', 1799.00, 'INR', 'month', 1, '{"requests": 20}', 'saleswit', NULL, 1, '2025-06-06 20:34:23', 'plan_R7wcSpKqLkC6Tg', 'domestic', '["razorpay"]'),
+('plan_R7wcZAnzGuAtLx', 'Platinum', 'Platinum access to MarketFit', 1799.00, 'INR', 'month', 1, '{"document_pages": 800, "perplexity_requests": 20}', 'marketfit', NULL, 1, '2025-06-06 20:34:23', 'plan_R7wcZAnzGuAtLx', 'domestic', '["razorpay"]'),
+('plan_R7wdbighbHnJlG', 'Platinum', 'Platinum access to SalesWit', 17988.00, 'INR', 'year', 1, '{"requests": 20}', 'saleswit', NULL, 1, '2025-06-06 20:34:23', 'plan_R7wdbighbHnJlG', 'domestic', '["razorpay"]'),
+('plan_R7wdVfrIMvICrU', 'Platinum', 'Platinum access to MarketFit', 17988.00, 'INR', 'year', 1, '{"document_pages": 800, "perplexity_requests": 20}', 'marketfit', NULL, 1, '2025-06-06 20:34:23', 'plan_R7wdVfrIMvICrU', 'domestic', '["razorpay"]'),
+('plan_R7we00iLGEvGMT', 'Gold', 'Gold access to SalesWit', 11988.00, 'INR', 'year', 1, '{"requests": 10}', 'saleswit', NULL, 1, '2025-06-06 20:34:23', 'plan_R7we00iLGEvGMT', 'domestic', '["razorpay"]'),
+('plan_R7we67gj8jznOu', 'Gold', 'Gold access to MarketFit', 11988.00, 'INR', 'year', 1, '{"document_pages": 350, "perplexity_requests": 10}', 'marketfit', NULL, 1, '2025-06-06 20:34:23', 'plan_R7we67gj8jznOu', 'domestic', '["razorpay"]'),
+('P-0K378342A2456682JNCU7DNI', 'Gold', 'Gold access to SalesWit', 143.40, 'USD', 'year', 1, '{"requests": 10}', 'saleswit', 'P-0K378342A2456682JNCU7DNI', 1, '2025-06-06 20:34:23', 'plan_R7wimSjkmFd9IP', 'international', '["paypal", "razorpay"]'),
+('P-70861846X3237140WNCU7C7I', 'Gold', 'Gold access to SalesWit', 14.95, 'USD', 'month', 1, '{"requests": 10}', 'saleswit', 'P-70861846X3237140WNCU7C7I', 1, '2025-06-06 20:34:23', 'plan_R7wgScZ1N4CZr3', 'international', '["paypal", "razorpay"]'),
+('P-6GE78381CU6774717NCU7ECA', 'Platinum', 'Platinum access to SalesWit', 215.40, 'USD', 'year', 1, '{"requests": 20}', 'saleswit', 'P-6GE78381CU6774717NCU7ECA', 1, '2025-06-06 20:34:23', 'plan_R7wiIfHryzGkLM', 'international', '["paypal", "razorpay"]'),
+('P-28P544701F5931341NCU7DXA', 'Platinum', 'Platinum access to SalesWit', 21.95, 'USD', 'month', 1, '{"requests": 20}', 'saleswit', 'P-28P544701F5931341NCU7DXA', 1, '2025-06-06 20:34:23', 'plan_R7wh61mTSYnF08', 'international', '["paypal", "razorpay"]');
+
 UNLOCK TABLES;
-/*!40103 SET TIME_ZONE=@OLD_TIME_ZONE */;
-
-/*!40101 SET SQL_MODE=@OLD_SQL_MODE */;
-/*!40014 SET FOREIGN_KEY_CHECKS=@OLD_FOREIGN_KEY_CHECKS */;
-/*!40014 SET UNIQUE_CHECKS=@OLD_UNIQUE_CHECKS */;
-/*!40101 SET CHARACTER_SET_CLIENT=@OLD_CHARACTER_SET_CLIENT */;
-/*!40101 SET CHARACTER_SET_RESULTS=@OLD_CHARACTER_SET_RESULTS */;
-/*!40101 SET COLLATION_CONNECTION=@OLD_COLLATION_CONNECTION */;
-/*!40111 SET SQL_NOTES=@OLD_SQL_NOTES */;
-
--- Dump completed on 2025-07-04  4:24:29
