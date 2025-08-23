@@ -625,10 +625,6 @@ def init_payment_routes(app, payment_service, paypal_service=None):
                 return jsonify({'error': 'Plan not found'}), 400
             internal_plan_id = plan_record['id']
             
-            # Validate gateway parameter
-            if current_gateway not in ['paypal', 'razorpay']:
-                return jsonify({'error': 'Invalid gateway. Must be paypal or razorpay'}), 400
-            
             # Get subscription to validate gateway matches
             subscription = payment_service._get_subscription_details(subscription_id)
             if not subscription or subscription['user_id'] != user_id:
