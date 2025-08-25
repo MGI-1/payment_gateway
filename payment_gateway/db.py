@@ -26,10 +26,10 @@ class DatabaseManager:
     def __init__(self, db_config=None):
         """Initialize the database manager"""
         self.db_config = db_config or DEFAULT_DB_CONFIG
-    
+        
     def get_connection(self):
         """Get a new database connection"""
-        return mysql.connector.connect(**self.db_config)
+        return mysql.connector.connect(buffered=True, **self.db_config)    
     
     def init_tables(self):
         """Initialize database tables required for payment processing"""
