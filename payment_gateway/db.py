@@ -29,7 +29,11 @@ class DatabaseManager:
         
     def get_connection(self):
         """Get a new database connection"""
-        return mysql.connector.connect(buffered=True, **self.db_config)    
+        # Create a copy of config to avoid modifying the original
+        config = self.db_config.copy()
+        # Set buffered=True, overriding any existing value
+        config['buffered'] = True
+        return mysql.connector.connect(**config)
     
     def init_tables(self):
         """Initialize database tables required for payment processing"""
