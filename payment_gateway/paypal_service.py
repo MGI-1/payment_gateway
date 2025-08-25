@@ -366,15 +366,29 @@ class PayPalService(BaseSubscriptionService):
             if not subscription:
                 return {'error': True, 'message': 'Subscription not found'}
             
+            # ✅ ADD THESE DEBUG LINES
+            logger.info(f"[DEBUG] Raw metadata from DB: {subscription.get('metadata')}")
+            logger.info(f"[DEBUG] Metadata type: {type(subscription.get('metadata'))}")
+            
             metadata = subscription.get('metadata', {})
             if isinstance(metadata, str):
                 try:
                     metadata = json.loads(metadata)
-                except:
+                    logger.info(f"[DEBUG] Parsed metadata: {metadata}")
+                except Exception as e:
+                    logger.error(f"[DEBUG] JSON parse error: {e}")
                     metadata = {}
             
-            if not metadata.get('paypal_approval_required'):
-                return {'error': True, 'message': 'No pending approval found'}
+            # ✅ ADD THESE DEBUG LINES
+            logger.info(f"[DEBUG] Final metadata: {metadata}")
+            logger.info(f"[DEBUG] Has upgrade_pending_approval: {metadata.get('upgrade_pending_approval')}")
+            logger.info(f"[DEBUG] Pending plan ID: {metadata.get('pending_plan_id')}")
+            
+            if not metadata.get('upgrade_pending_approval'):
+                return {
+                    'error': True, 
+                    'message': f'No pending approval found for subscription {subscription_id}. Metadata keys: {list(metadata.keys())}'
+                }
             
             new_plan_id = metadata.get('pending_plan_id')
             if not new_plan_id:

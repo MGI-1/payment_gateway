@@ -1397,6 +1397,8 @@ class PaymentService(BaseSubscriptionService):
             return self._handle_razorpay_payment_link_paid(payload)
         elif event_type == 'payment.captured':      # NEW
             return self._handle_razorpay_payment_captured(payload)
+        elif event_type == 'invoice.paid':  # ADD THIS LINE
+            return self._handle_razorpay_invoice_paid(payload)  # ADD THIS LINE
         else:
             return {'status': 'ignored', 'message': f'Unhandled event type: {event_type}'}
 
@@ -2635,6 +2637,68 @@ class PaymentService(BaseSubscriptionService):
         except Exception as e:
             logger.error(f"Error getting subscription by ID: {str(e)}")
             return None
+
+    def _handle_razorpay_invoice_paid(self, payload):
+        """Handle invoice.paid webhook event - only for missing invoices"""
+        try:
+            invoice_data = payload.get('payload', {}).get('invoice', {}).get('entity', {})
+            payment_data = payload.get('payload', {}).get('payment', {}).get('entity', {})
+            
+            invoice_id = invoice_data.get('id')
+            payment_id = payment_data.get('id')
+            subscription_id = invoice_data.get('subscription_id')
+            
+            logger.info(f"Processing invoice paid: invoice={invoice_id}, payment={payment_id}, subscription={subscription_id}")
+            
+            # EARLY EXIT: If invoice already exists, don't process (prevents duplicates)
+            existing_invoice = self._check_existing_invoice(payment_id, invoice_id)
+            if existing_invoice:
+                logger.info(f"Invoice already exists for payment {payment_id}, skipping duplicate creation")
+                return {'status': 'success', 'message': 'Invoice already exists'}
+            
+            # Only process invoices with subscription context
+            if subscription_id:
+                # Find our internal subscription
+                subscription = self._get_subscription_by_razorpay_id(subscription_id)
+                if subscription:
+                    amount = float(invoice_data.get('amount', 0)) / 100  # Convert paisa to rupees/dollars
+                    currency = invoice_data.get('currency', 'INR')
+                    payment_method = payment_data.get('method', 'unknown')
+                    
+                    logger.info(f"Creating missing invoice for subscription {subscription['id']}: ${amount} {currency}")
+                    
+                    # Create invoice record using existing helper method
+                    internal_invoice_id = self._create_simple_invoice(
+                        payment_id,
+                        invoice_id,
+                        subscription['id'],
+                        amount,
+                        currency,
+                        f'{payment_method}_upgrade'
+                    )
+                    
+                    if internal_invoice_id:
+                        logger.info(f"Created missing invoice {internal_invoice_id} for upgrade payment {payment_id}")
+                        return {
+                            'status': 'success',
+                            'message': 'Missing invoice created for subscription payment',
+                            'invoice_id': internal_invoice_id,
+                            'payment_type': 'missing_invoice'
+                        }
+                    else:
+                        logger.error(f"Failed to create invoice for payment {payment_id}")
+                        return {'status': 'error', 'message': 'Failed to create invoice'}
+                else:
+                    logger.warning(f"Subscription not found for Razorpay subscription ID: {subscription_id}")
+                    return {'status': 'error', 'message': 'Subscription not found in database'}
+            
+            logger.info(f"Invoice {invoice_id} has no subscription context, ignoring")
+            return {'status': 'ignored', 'message': 'No subscription context for invoice'}
+            
+        except Exception as e:
+            logger.error(f"Error handling invoice paid: {str(e)}")
+            logger.error(traceback.format_exc())
+            return {'status': 'error', 'message': str(e)}
 
 payment_service = PaymentService()
 
