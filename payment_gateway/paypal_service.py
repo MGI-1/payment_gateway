@@ -422,9 +422,8 @@ class PayPalService(BaseSubscriptionService):
             logger.error(f"Error completing approved upgrade: {str(e)}")
             return {'error': True, 'message': str(e)}
 
-    # Update the existing handle_proration_completion method
     def handle_proration_completion(self, order_id):
-        """Handle completion of PayPal proration payment"""
+        """Handle completion of PayPal proration payment with proportional resource allocation"""
         try:
             capture_result = self.paypal.capture_order_payment(order_id)
             
@@ -445,6 +444,7 @@ class PayPalService(BaseSubscriptionService):
                     
             pending_upgrade = metadata.get('pending_paypal_upgrade', {})
             new_plan_id = pending_upgrade.get('new_plan_id')
+            time_factor = pending_upgrade.get('time_factor', 1.0)  # Get stored time factor
             
             if not new_plan_id:
                 return {'error': True, 'message': 'No pending upgrade found'}
@@ -455,14 +455,14 @@ class PayPalService(BaseSubscriptionService):
                 self._get_plan(new_plan_id)['paypal_plan_id']
             )
             
-            # ✅ Check for errors
+            # Check for errors
             if paypal_result.get('error'):
                 return {
                     'error': True,
                     'message': f'PayPal subscription update failed: {paypal_result.get("message")}'
                 }
             
-            # ✅ Handle approval requirement
+            # Handle approval requirement
             if paypal_result.get('requires_approval'):
                 # Store approval requirement in metadata
                 self._store_approval_requirement(
@@ -482,8 +482,8 @@ class PayPalService(BaseSubscriptionService):
                     'next_step': 'approval_required'
                 }
             
-            # ✅ PayPal update succeeded immediately
-            self._complete_upgrade_locally(subscription['id'], new_plan_id)
+            # PayPal update succeeded immediately - complete upgrade locally with time factor
+            self._complete_upgrade_locally_with_time_factor(subscription['id'], new_plan_id, time_factor)
             
             # Log the completion
             self.db.log_subscription_action(
@@ -492,7 +492,9 @@ class PayPalService(BaseSubscriptionService):
                 {
                     'old_plan': subscription['plan_id'],
                     'new_plan_id': new_plan_id,
-                    'upgrade_type': 'immediate'
+                    'upgrade_type': 'immediate',
+                    'time_factor': time_factor,
+                    'proportional_resources': True
                 },
                 f"user_{subscription['user_id']}"
             )
@@ -501,12 +503,38 @@ class PayPalService(BaseSubscriptionService):
                 'success': True,
                 'subscription_id': subscription['id'],
                 'new_plan_id': new_plan_id,
-                'message': 'Upgrade completed successfully!'
+                'message': 'Upgrade completed successfully with proportional resource allocation!'
             }
             
         except Exception as e:
             logger.error(f"Error handling PayPal proration completion: {str(e)}")
             return {'error': True, 'message': str(e)}
+
+    def _complete_upgrade_locally_with_time_factor(self, subscription_id, new_plan_id, time_factor):
+        """Complete upgrade in local database with proportional resource allocation"""
+        try:
+            subscription = self._get_subscription_details(subscription_id)
+            if not subscription:
+                raise ValueError("Subscription not found")
+            
+            self._update_subscription_plan(subscription_id, new_plan_id)
+            
+            # Initialize resource quota with time factor for proportional allocation
+            self.initialize_resource_quota(
+                subscription['user_id'], 
+                subscription_id, 
+                subscription['app_id'],
+                time_factor  # Pass time factor for proportional resources
+            )
+            
+            self._clear_pending_upgrade(subscription_id)
+            
+            logger.info(f"Completed upgrade locally: subscription {subscription_id} to plan {new_plan_id} with {time_factor:.2%} proportional resources")
+            
+        except Exception as e:
+            logger.error(f"Error completing upgrade locally: {str(e)}")
+            raise
+
 
     # Add the missing webhook handler
     def _handle_payment_capture_completed(self, payload):
@@ -894,7 +922,7 @@ class PayPalService(BaseSubscriptionService):
             raise
 
     def _handle_upgrade_completion_payment(self, subscription, resource):
-        """Handle upgrade completion payment"""
+        """Handle upgrade completion payment with proportional resource allocation"""
         try:
             payment_id = resource.get('id')
             
@@ -908,6 +936,7 @@ class PayPalService(BaseSubscriptionService):
             
             pending_upgrade = metadata.get('pending_paypal_upgrade', {})
             new_plan_id = pending_upgrade.get('new_plan_id')
+            time_factor = pending_upgrade.get('time_factor', 1.0)  # Get stored time factor
             
             if not new_plan_id:
                 logger.error(f"No pending upgrade found for subscription {subscription['id']}")
@@ -921,24 +950,27 @@ class PayPalService(BaseSubscriptionService):
             # Update subscription plan
             self._update_subscription_plan(subscription['id'], new_plan_id)
             
-            # Initialize full quota for new plan
+            # Initialize quota with time factor for proportional allocation
             self.initialize_resource_quota(
                 subscription['user_id'], 
                 subscription['id'], 
-                subscription['app_id']
+                subscription['app_id'],
+                time_factor  # Use stored time factor instead of default 1.0
             )
             
-            # Clear pending upgrade
+            # Clear pending upgrade metadata
             self._clear_pending_upgrade(subscription['id'])
             
-            logger.info(f"Completed upgrade payment {payment_id} for subscription {subscription['id']}")
+            logger.info(f"Completed upgrade payment {payment_id} for subscription {subscription['id']} with time factor {time_factor}")
             
             return {
                 'success': True,
                 'subscription_id': subscription['id'],
                 'invoice_id': invoice_id,
                 'new_plan_id': new_plan_id,
-                'payment_type': 'upgrade'
+                'payment_type': 'upgrade',
+                'time_factor_used': time_factor,
+                'proportional_resources_allocated': True
             }
             
         except Exception as e:
@@ -1274,31 +1306,32 @@ class PayPalService(BaseSubscriptionService):
     def _handle_annual_upgrade(self, subscription, current_plan, new_plan, app_id, billing_cycle_info, resource_info):
         """Handle annual to annual PayPal upgrade with correct proration calculation"""
         try:
-            # Calculate value remaining percentage
-            value_remaining_pct = self._calculate_value_remaining_percentage(billing_cycle_info, resource_info)
+            # Calculate separate remaining percentages
+            remaining_values = self._calculate_value_remaining_percentage(billing_cycle_info, resource_info)
             
-            # ✅ NEW: Calculate both current and new plan remaining values
-            current_plan_remaining_value = round(value_remaining_pct * self._ensure_float(current_plan['amount']), 2)
-            new_plan_remaining_value = round(value_remaining_pct * self._ensure_float(new_plan['amount']), 2)
+            # Calculate remaining values using separate percentages
+            current_plan_remaining_value = round(remaining_values['current_plan_remaining'] * self._ensure_float(current_plan['amount']), 2)
+            new_plan_remaining_value = round(remaining_values['time_remaining'] * self._ensure_float(new_plan['amount']), 2)
             
-            # ✅ NEW: Calculate the difference (what user actually needs to pay)
+            # Calculate the difference (what user actually needs to pay)
             proration_difference = new_plan_remaining_value - current_plan_remaining_value
             
-            time_remaining = billing_cycle_info['time_factor'] * 100
-            resource_remaining = (1 - resource_info['base_plan_consumed_pct']) * 100
+            time_remaining = remaining_values['time_remaining'] * 100
+            resource_remaining = remaining_values['resource_remaining'] * 100
+            current_plan_remaining = remaining_values['current_plan_remaining'] * 100
             
-            # ✅ UPDATED: Enhanced message with correct calculation explanation
+            # Enhanced message with correct calculation explanation
             message = (
                 f"Upgrading from {current_plan['name']} to {new_plan['name']}. "
                 f"You have {time_remaining:.0f}% time remaining and {resource_remaining:.0f}% resources remaining in your current billing cycle. "
-                f"Current plan remaining value: ${current_plan_remaining_value:.2f}, "
-                f"New plan remaining value: ${new_plan_remaining_value:.2f}. "
+                f"Current plan unused value: ${current_plan_remaining_value:.2f} (based on {current_plan_remaining:.0f}% unused), "
+                f"New plan remaining period value: ${new_plan_remaining_value:.2f} (based on {time_remaining:.0f}% time remaining). "
                 f"You need to pay the difference of ${proration_difference:.2f} for the upgraded features for the remaining period."
             )
             
-            # ✅ UPDATED: Create payment for the difference amount
+            # Create payment for the difference amount
             proration_payment_result = self._create_one_time_payment(
-                proration_difference,  # ← Now charging only the difference
+                proration_difference,
                 subscription,
                 f'Upgrade proration payment (difference): ${proration_difference:.2f}'
             )
@@ -1306,11 +1339,12 @@ class PayPalService(BaseSubscriptionService):
             if proration_payment_result.get('error'):
                 raise ValueError(f"Failed to create proration payment: {proration_payment_result['message']}")
             
-            # Store pending upgrade details
+            # Store pending upgrade details with time factor for resource allocation
             self._store_pending_upgrade(
                 subscription['id'],
                 new_plan['id'],
-                proration_payment_result['order_id']
+                proration_payment_result['order_id'],
+                remaining_values['time_remaining']  # Store time factor for later use
             )
             
             return {
@@ -1318,7 +1352,7 @@ class PayPalService(BaseSubscriptionService):
                 'upgrade_type': 'paypal_with_proration',
                 'subscription_id': subscription['id'],
                 'new_plan_id': new_plan['id'],
-                'proration_amount': proration_difference,  # ← Updated to show difference
+                'proration_amount': proration_difference,
                 'payment_required': True,
                 'payment_url': proration_payment_result['approval_url'],
                 'message': message,
@@ -1326,10 +1360,11 @@ class PayPalService(BaseSubscriptionService):
                 'calculation_details': {
                     'time_remaining': f"{time_remaining:.0f}%",
                     'resources_remaining': f"{resource_remaining:.0f}%",
-                    'billing_basis': 'minimum of time and resources remaining',
+                    'current_plan_unused': f"{current_plan_remaining:.0f}%",
+                    'billing_basis': 'separate calculation for current vs new plan',
                     'current_plan_remaining_value': current_plan_remaining_value,
                     'new_plan_remaining_value': new_plan_remaining_value,
-                    'proration_charge': proration_difference  # ← Updated
+                    'proration_charge': proration_difference
                 }
             }
             
@@ -1743,9 +1778,8 @@ class PayPalService(BaseSubscriptionService):
             logger.error(f"Error creating PayPal one-time payment: {str(e)}")
             return {'error': True, 'message': str(e)}
 
-
-    def _store_pending_upgrade(self, subscription_id, new_plan_id, order_id):
-        """Store pending upgrade details"""
+    def _store_pending_upgrade(self, subscription_id, new_plan_id, order_id, time_factor=1.0):
+        """Store pending upgrade details with time factor for resource allocation"""
         try:
             conn = self.db.get_connection()
             cursor = conn.cursor()
@@ -1759,6 +1793,7 @@ class PayPalService(BaseSubscriptionService):
                 'pending_paypal_upgrade': {
                     'new_plan_id': new_plan_id,
                     'order_id': order_id,
+                    'time_factor': time_factor,  # Store for proportional resource allocation
                     'created_at': datetime.now().isoformat()
                 }
             }), subscription_id))

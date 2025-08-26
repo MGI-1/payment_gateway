@@ -326,8 +326,8 @@ class BaseSubscriptionService:
     # SHARED RESOURCE QUOTA METHODS
     # =============================================================================
 
-    def initialize_resource_quota(self, user_id, subscription_id, app_id):
-        """Initialize or reset resource quota for a subscription period"""
+    def initialize_resource_quota(self, user_id, subscription_id, app_id, time_factor=1.0):
+        """Initialize or reset resource quota for a subscription period with optional time factor"""
         try:
             subscription_details = self._get_subscription_with_features(subscription_id)
             
@@ -338,8 +338,8 @@ class BaseSubscriptionService:
             # Parse features
             features = self._parse_subscription_features(subscription_details.get('features', '{}'))
             
-            # Set quota based on app
-            quota_values = self._calculate_quota_values(app_id, features)
+            # Set quota based on app with time factor
+            quota_values = self._calculate_quota_values(app_id, features, time_factor)
             
             # Create or update quota record with original values
             return self._save_quota_record_with_originals(user_id, subscription_id, app_id, subscription_details, quota_values)
@@ -358,21 +358,36 @@ class BaseSubscriptionService:
                 return {}
         return features_str or {}
 
-    def _calculate_quota_values(self, app_id, features):
-        """Calculate quota values based on app and features"""
+    def _calculate_quota_values(self, app_id, features, time_factor=1.0):
+        """Calculate quota values based on app and features with optional time factor for mid-cycle upgrades"""
+        import math
+        
         if app_id == 'marketfit':
+            base_doc_pages = features.get('document_pages')
+            base_perplexity = features.get('perplexity_requests')
+            
             return {
-                'document_pages_quota': features.get('document_pages', 40),
-                'perplexity_requests_quota': features.get('perplexity_requests', 2),
-                'requests_quota': 0
+                'document_pages_quota': math.ceil(base_doc_pages * time_factor),
+                'perplexity_requests_quota': math.ceil(base_perplexity * time_factor),
+                'requests_quota': 0,
+                # Keep originals for reference
+                'original_document_pages_quota': base_doc_pages,
+                'original_perplexity_requests_quota': base_perplexity,
+                'original_requests_quota': 0
             }
         else:  # saleswit
+            base_requests = features.get('requests')
+            
             return {
                 'document_pages_quota': 0,
                 'perplexity_requests_quota': 0,
-                'requests_quota': features.get('requests', 2)
+                'requests_quota': math.ceil(base_requests * time_factor),
+                # Keep originals for reference
+                'original_document_pages_quota': 0,
+                'original_perplexity_requests_quota': 0,
+                'original_requests_quota': base_requests
             }
-
+            
     def _save_quota_record_with_originals(self, user_id, subscription_id, app_id, subscription_details, quota_values):
         """Save or update quota record with original quota tracking"""
         try:
@@ -407,9 +422,9 @@ class BaseSubscriptionService:
                     quota_values['document_pages_quota'],
                     quota_values['perplexity_requests_quota'],
                     quota_values['requests_quota'],
-                    quota_values['document_pages_quota'],  # Set original to new values
-                    quota_values['perplexity_requests_quota'],
-                    quota_values['requests_quota'],
+                    quota_values['original_document_pages_quota'],
+                    quota_values['original_perplexity_requests_quota'],
+                    quota_values['original_requests_quota'],
                     quota_record['id']
                 ))
                 logger.info(f"Updated existing quota record {quota_record['id']}")
@@ -431,9 +446,9 @@ class BaseSubscriptionService:
                     quota_values['document_pages_quota'],
                     quota_values['perplexity_requests_quota'],
                     quota_values['requests_quota'],
-                    quota_values['document_pages_quota'],  # Original quotas
-                    quota_values['perplexity_requests_quota'],
-                    quota_values['requests_quota']
+                    quota_values['original_document_pages_quota'],
+                    quota_values['original_perplexity_requests_quota'],
+                    quota_values['original_requests_quota']
                 ))
             
             conn.commit()
@@ -445,7 +460,7 @@ class BaseSubscriptionService:
         except Exception as e:
             logger.error(f"Error saving quota record: {str(e)}")
             raise
-
+        
     def _add_temporary_resources(self, user_id, subscription_id, app_id):
         """Add double free plan resources temporarily"""
         try:
@@ -522,12 +537,15 @@ class BaseSubscriptionService:
             (plan.get('interval') == 'month' and plan.get('interval_count', 1) >= 12)
 
     def _calculate_value_remaining_percentage(self, billing_cycle_info, resource_info):
-        """Calculate value remaining as percentage based on min of time left and resources left"""
+        """Calculate value remaining as separate percentages for current plan and time remaining"""
         time_remaining_pct = billing_cycle_info['time_factor']
         resource_remaining_pct = 1 - resource_info['base_plan_consumed_pct']
-        value_remaining_pct = min(time_remaining_pct, resource_remaining_pct)
-        return round(max(0.0, value_remaining_pct), 6)  # 6 decimal places for percentage precision
-    
+        return {
+            'current_plan_remaining': round(max(0.0, min(time_remaining_pct, resource_remaining_pct)), 6),
+            'time_remaining': round(max(0.0, time_remaining_pct), 6),
+            'resource_remaining': round(max(0.0, resource_remaining_pct), 6)
+        }
+
     def get_available_plans(self, app_id='marketfit'):
         """
         Get all available subscription plans for an app
