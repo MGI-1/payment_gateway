@@ -2139,49 +2139,147 @@ class PaymentService(BaseSubscriptionService):
     def _handle_usd_razorpay_annual_upgrade(self, subscription, current_plan, new_plan, app_id, billing_cycle_info, resource_info):
         """Handle annual to annual USD Razorpay upgrade with potential additional payment"""
         try:
-            # First do the standard upgrade
-            simple_result = self._handle_usd_razorpay_simple_upgrade(subscription, new_plan['id'])
+            # Skip simple upgrade - do direct Razorpay plan update
+            razorpay_subscription_id = subscription['razorpay_subscription_id']
+            new_razorpay_plan_id = new_plan['razorpay_plan_id']
             
-            # Add temporary resources first
-            self._add_temporary_resources(subscription['user_id'], subscription['id'], app_id)
+            if not new_razorpay_plan_id:
+                raise ValueError(f"Plan {new_plan['id']} missing Razorpay plan ID")
             
-            # Check if additional payment is needed
+            # Update Razorpay subscription directly
+            response = self.razorpay.client.subscription.edit(razorpay_subscription_id, {
+                'plan_id': new_razorpay_plan_id
+            })
+            
+            if 'error' in response:
+                raise ValueError(f"Razorpay upgrade failed: {response.get('error', {}).get('description')}")
+            
+            # Update local database plan
+            self._update_subscription_plan(subscription['id'], new_plan['id'])
+            
+            # Calculate time factor for resource allocation
             time_remaining_pct = billing_cycle_info['time_factor']
             resource_remaining_pct = 1 - resource_info['base_plan_consumed_pct']
             
-            # Check if resources left% < time left% by 5%
+            # Check if additional payment is needed
             if (time_remaining_pct - resource_remaining_pct) >= 0.05:
+                # Additional payment required - add temporary resources first
+                self._add_temporary_resources(subscription['user_id'], subscription['id'], app_id)
+                
                 # Calculate additional payment
                 excess_consumption_pct = (time_remaining_pct - resource_remaining_pct) - 0.05
                 additional_amount = excess_consumption_pct * self._ensure_float(current_plan['amount'])
+                
+                # Store time factor for payment completion processing
+                self._store_razorpay_annual_upgrade_metadata(
+                    subscription['id'], 
+                    time_remaining_pct, 
+                    additional_amount
+                )
                 
                 # Create additional invoice
                 additional_payment_result = self._create_additional_payment_invoice(
                     subscription, additional_amount, 'USD'
                 )
-                 # Enhanced message with calculation
+                
+                # Enhanced message with calculation
                 message = (
                     f'Subscription upgraded with temporary resources. Additional payment of ${additional_amount:.2f} required. '
                     f'Calculation: You have {time_remaining_pct:.1%} time remaining but only {resource_remaining_pct:.1%} resources left. '
                     f'The excess consumption of {excess_consumption_pct:.1%} × ${current_plan["amount"]} = ${additional_amount:.2f}.'
                 )
-                simple_result.update({
+                
+                return {
+                    'success': True,
+                    'upgrade_type': 'razorpay_plan_change',
+                    'subscription_id': subscription['id'],
+                    'new_plan_id': new_plan['id'],
                     'additional_payment_required': True,
                     'additional_amount': additional_amount,
                     'additional_payment_link': additional_payment_result.get('short_url'),
                     'message': message,
                     'temporary_resources_added': True
-                })
+                }
             else:
-                simple_result.update({
-                    'temporary_resources_added': True,
-                    'message': 'Subscription upgraded successfully. Temporary resources added.'
-                })
-            
-            return simple_result
+                # No additional payment needed - set proportional resources immediately
+                self.initialize_resource_quota(
+                    subscription['user_id'], 
+                    subscription['id'], 
+                    subscription['app_id'],
+                    time_remaining_pct  # Use time factor for proportional allocation
+                )
+                
+                return {
+                    'success': True,
+                    'upgrade_type': 'razorpay_plan_change',
+                    'subscription_id': subscription['id'],
+                    'new_plan_id': new_plan['id'],
+                    'additional_payment_required': False,
+                    'message': f'Subscription upgraded successfully with proportional resources ({time_remaining_pct:.1%} of annual quota).',
+                    'proportional_resources_allocated': True,
+                    'time_factor_used': time_remaining_pct
+                }
             
         except Exception as e:
             logger.error(f"Error in annual USD Razorpay upgrade: {str(e)}")
+            raise
+
+    def _store_razorpay_annual_upgrade_metadata(self, subscription_id, time_factor, additional_amount):
+        """Store Razorpay annual upgrade metadata including time factor"""
+        try:
+            conn = self.db.get_connection()
+            cursor = conn.cursor()
+            
+            upgrade_metadata = {
+                'razorpay_annual_upgrade': {
+                    'time_factor': time_factor,
+                    'additional_amount': additional_amount,
+                    'upgrade_timestamp': datetime.now().isoformat(),
+                    'additional_payment_required': additional_amount > 0
+                }
+            }
+            
+            cursor.execute(f"""
+                UPDATE {DB_TABLE_USER_SUBSCRIPTIONS}
+                SET metadata = JSON_MERGE_PATCH(IFNULL(metadata, '{{}}'), %s),
+                    updated_at = NOW()
+                WHERE id = %s
+            """, (json.dumps(upgrade_metadata), subscription_id))
+            
+            conn.commit()
+            cursor.close()
+            conn.close()
+            
+            logger.info(f"Stored Razorpay annual upgrade metadata for subscription {subscription_id} with time factor {time_factor}")
+            
+        except Exception as e:
+            logger.error(f"Error storing Razorpay annual upgrade metadata: {str(e)}")
+            raise
+
+    def _clear_razorpay_annual_upgrade_metadata(self, subscription_id):
+        """Clear Razorpay annual upgrade metadata after completion"""
+        try:
+            conn = self.db.get_connection()
+            cursor = conn.cursor()
+            
+            cursor.execute(f"""
+                UPDATE {DB_TABLE_USER_SUBSCRIPTIONS}
+                SET metadata = JSON_REMOVE(
+                    IFNULL(metadata, '{{}}'), 
+                    '$.razorpay_annual_upgrade'
+                ),
+                updated_at = NOW()
+                WHERE id = %s
+            """, (subscription_id,))
+            
+            conn.commit()
+            cursor.close()
+            conn.close()
+            
+            logger.info(f"Cleared Razorpay annual upgrade metadata for subscription {subscription_id}")
+            
+        except Exception as e:
+            logger.error(f"Error clearing Razorpay annual upgrade metadata: {str(e)}")
             raise
 
         # Supporting methods
@@ -2258,30 +2356,49 @@ class PaymentService(BaseSubscriptionService):
     def handle_additional_payment_completion(self, payment_id, subscription_id):
         """Handle completion of additional payment for USD annual upgrade"""
         try:
-            
             subscription = self._get_subscription_details(subscription_id)
             if not subscription:
                 return {'error': True, 'message': 'Subscription not found'}
             
-            # Replace temporary resources with full quota for new plan
+            # Get stored time factor from metadata
+            metadata = subscription.get('metadata', {})
+            if isinstance(metadata, str):
+                try:
+                    metadata = json.loads(metadata)
+                except:
+                    metadata = {}
+            
+            # Extract time factor from Razorpay annual upgrade metadata
+            razorpay_upgrade = metadata.get('razorpay_annual_upgrade', {})
+            time_factor = razorpay_upgrade.get('time_factor', 1.0)  # Default to full resources if not found
+            
+            # Replace temporary resources with proportional quota for new plan
             self.initialize_resource_quota(
                 subscription['user_id'], 
                 subscription_id, 
-                subscription['app_id']
+                subscription['app_id'],
+                time_factor  # Use stored time factor for proportional allocation
             )
+            
+            # Clear the upgrade metadata
+            self._clear_razorpay_annual_upgrade_metadata(subscription_id)
             
             self.db.log_subscription_action(
                 subscription_id,
                 'additional_payment_completed',
                 {
-                    'payment_id': payment_id
+                    'payment_id': payment_id,
+                    'time_factor_used': time_factor,
+                    'proportional_resources_allocated': True
                 },
                 f"user_{subscription['user_id']}"
             )
             
             return {
                 'success': True,
-                'message': 'Additional payment processed, full resources activated'
+                'message': f'Additional payment processed, proportional resources activated ({time_factor:.1%} of annual quota)',
+                'time_factor_used': time_factor,
+                'proportional_allocation': True
             }
             
         except Exception as e:
