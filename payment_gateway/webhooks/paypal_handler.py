@@ -128,7 +128,7 @@ def _download_and_verify_certificate(cert_url):
         
         # Download certificate with timeout
         logger.info(f"Downloading PayPal certificate from: {cert_url}")
-        response = requests.get(cert_url, timeout=10)
+        response = requests.get(cert_url, timeout=20)
         response.raise_for_status()
         
         # Parse X.509 certificate

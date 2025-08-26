@@ -80,7 +80,7 @@ class PayPalProvider:
                 f"{self.base_url}/v1/oauth2/token",
                 headers=headers,
                 data=data,
-                timeout=60
+                timeout=120
             )
             
             if response.status_code == 200:
@@ -115,11 +115,11 @@ class PayPalProvider:
             url = f"{self.base_url}{endpoint}"
             
             if method == "GET":
-                response = requests.get(url, headers=headers, timeout=60)
+                response = requests.get(url, headers=headers, timeout=120)
             elif method == "POST":
-                response = requests.post(url, headers=headers, data=json.dumps(data) if data else None, timeout=60)
+                response = requests.post(url, headers=headers, data=json.dumps(data) if data else None, timeout=120)
             elif method == "PATCH":
-                response = requests.patch(url, headers=headers, data=json.dumps(data) if data else None, timeout=60)
+                response = requests.patch(url, headers=headers, data=json.dumps(data) if data else None, timeout=120)
             else:
                 return {'error': True, 'message': f'Unsupported method: {method}'}
             

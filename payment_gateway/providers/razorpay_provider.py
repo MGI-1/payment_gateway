@@ -93,17 +93,20 @@ class RazorpayProvider:
             }
             
             # Set up callback method and URL for payment success redirection
-            callback_data = {}
-            if redirect_url:
-                callback_data = {
-                    'callback_url': redirect_url,
-                    'callback_method': 'get'
-                }
-                subscription_data.update(callback_data)
+            # Set up callback method and URL for payment success redirection
+            if not redirect_url:
+                from ..config import get_frontend_url
+                redirect_url = f"{get_frontend_url()}/subscription-dashboard?status=success"
+
+            callback_data = {
+                'callback_url': redirect_url,
+                'callback_method': 'get'
+            }
+            subscription_data.update(callback_data)
             
             logger.info(f"[RAZORPAY DEBUG] Full subscription_data: {subscription_data}")    
             logger.info(f"Creating Razorpay subscription for user {user_id} with plan {plan_id}")
-            razorpay_subscription = self.client.subscription.create(subscription_data, timeout=60)
+            razorpay_subscription = self.client.subscription.create(subscription_data, timeout=120)
             
             return {
                 'id': razorpay_subscription.get('id'),
@@ -120,55 +123,6 @@ class RazorpayProvider:
                 'message': str(e)
             }
     
-    def create_subscription_with_offer(self, plan_id, customer_info, app_id, discount_offer_pct=None, additional_notes=None):
-        """Create a subscription with discount offer"""
-        if not self.initialized or not self.client:
-            return {
-                'error': True,
-                'message': 'Razorpay client not initialized'
-            }
-        
-        try:
-            user_id = customer_info.get('user_id')
-            
-            notes = {
-                'user_id': user_id,
-                'app_id': app_id
-            }
-            
-            if additional_notes and isinstance(additional_notes, dict):
-                notes.update(additional_notes)
-            
-            subscription_data = {
-                'plan_id': plan_id,
-                'customer_notify': True,
-                'quantity': 1,
-                'total_count': 12,
-                'notes': notes
-            }
-            
-            # Add discount offer if specified
-            if discount_offer_pct and discount_offer_pct > 0:
-                subscription_data['offer_id'] = f'offer_{discount_offer_pct}pct'
-            
-            logger.info(f"Creating Razorpay subscription with {discount_offer_pct}% discount")
-            razorpay_subscription = self.client.subscription.create(subscription_data, timeout=60)
-            
-            return {
-                'id': razorpay_subscription.get('id'),
-                'status': razorpay_subscription.get('status'),
-                'short_url': razorpay_subscription.get('short_url'),
-                'discount_applied': discount_offer_pct,
-                'data': razorpay_subscription
-            }
-            
-        except Exception as e:
-            logger.error(f"Error creating Razorpay subscription with offer: {str(e)}")
-            return {
-                'error': True,
-                'message': str(e)
-            }
-
     def create_payment_link(self, invoice_data):
         """Create a payment link for one-time payments"""
         if not self.initialized or not self.client:
@@ -190,7 +144,7 @@ class RazorpayProvider:
                 'callback_method': 'get'
             }
             
-            payment_link = self.client.payment_link.create(payment_link_data, timeout=60)
+            payment_link = self.client.payment_link.create(payment_link_data, timeout=120)
             
             return {
                 'success': True,
@@ -234,7 +188,7 @@ class RazorpayProvider:
                 result = self.client.subscription.cancel(
                     subscription_id,
                     {"cancel_at_cycle_end": cancel_at_cycle_end},
-                    timeout=60
+                    timeout=120
                 )
                 
                 return {
@@ -296,8 +250,16 @@ class RazorpayProvider:
                 'offer_id': offer_id  # Use the specific offer ID
             }
             
+            # ADD REDIRECT CONFIGURATION
+            from ..config import get_frontend_url
+            callback_data = {
+                'callback_url': f"{get_frontend_url()}/subscription-dashboard?status=success&upgrade=true",
+                'callback_method': 'get'
+            }
+            subscription_data.update(callback_data)
+            
             logger.info(f"Creating Razorpay subscription with specific offer: {offer_id} for plan: {razorpay_plan_id}")
-            razorpay_subscription = self.client.subscription.create(subscription_data, timeout=60)
+            razorpay_subscription = self.client.subscription.create(subscription_data, timeout=120)
             
             return {
                 'id': razorpay_subscription.get('id'),
@@ -334,7 +296,7 @@ class RazorpayProvider:
             logger.info(f"Fetching Razorpay subscription: {subscription_id}")
             
             # Fetch the subscription
-            subscription = self.client.subscription.fetch(subscription_id, timeout=60)
+            subscription = self.client.subscription.fetch(subscription_id, timeout=120)
             
             return {
                 'success': True,
