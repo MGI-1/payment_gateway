@@ -93,16 +93,13 @@ class RazorpayProvider:
             }
             
             # Set up callback method and URL for payment success redirection
-            # Set up callback method and URL for payment success redirection
-            if not redirect_url:
-                from ..config import get_frontend_url
-                redirect_url = f"{get_frontend_url()}/subscription-dashboard?status=success"
-
-            callback_data = {
-                'callback_url': redirect_url,
-                'callback_method': 'get'
-            }
-            subscription_data.update(callback_data)
+            #callback_data = {}
+            #if redirect_url:
+            #    callback_data = {
+            #        'callback_url': redirect_url,
+            #        'callback_method': 'get'
+            #}
+            #subscription_data.update(callback_data)
             
             logger.info(f"[RAZORPAY DEBUG] Full subscription_data: {subscription_data}")    
             logger.info(f"Creating Razorpay subscription for user {user_id} with plan {plan_id}")
@@ -249,14 +246,6 @@ class RazorpayProvider:
                 'notes': notes,
                 'offer_id': offer_id  # Use the specific offer ID
             }
-            
-            # ADD REDIRECT CONFIGURATION
-            from ..config import get_frontend_url
-            callback_data = {
-                'callback_url': f"{get_frontend_url()}/subscription-dashboard?status=success&upgrade=true",
-                'callback_method': 'get'
-            }
-            subscription_data.update(callback_data)
             
             logger.info(f"Creating Razorpay subscription with specific offer: {offer_id} for plan: {razorpay_plan_id}")
             razorpay_subscription = self.client.subscription.create(subscription_data, timeout=120)
