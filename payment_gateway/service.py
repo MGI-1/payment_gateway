@@ -1784,7 +1784,8 @@ class PaymentService(BaseSubscriptionService):
         
         try:
             # Calculate value remaining and discount
-            value_remaining_pct = self._calculate_value_remaining_percentage(billing_cycle_info, resource_info)
+            remaining_values = self._calculate_value_remaining_percentage(billing_cycle_info, resource_info)
+            value_remaining_pct = remaining_values['current_plan_remaining']  # Use the correct key
             value_remaining_amount = value_remaining_pct * self._ensure_float(current_plan['amount'])
             discount_pct_of_new_plan = (value_remaining_amount / self._ensure_float(new_plan['amount'])) * 100
             
