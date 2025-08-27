@@ -102,7 +102,7 @@ def init_payment_routes(app, payment_service, paypal_service=None):
             
         except Exception as e:
             logger.error(f"Error cancelling subscription: {str(e)}")
-            return jsonify({'error': str(e)}), 500
+            return jsonify({'error': 'Unable to process cancellation request. Please try again or contact support for assistance.'}), 500
 
     @payment_bp.route('/razorpay-webhook', methods=['POST'])
     def razorpay_webhook():
