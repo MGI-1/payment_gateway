@@ -66,6 +66,10 @@ class BaseSubscriptionService:
             
             cursor.close()
             conn.close()
+            
+            if not user:
+                raise ValueError("Account verification failed. Please sign out and sign in again, or contact support if the issue persists.")
+            
             return user
             
         except Exception as e:
@@ -89,7 +93,10 @@ class BaseSubscriptionService:
             
             cursor.close()
             conn.close()
-            
+        
+            if not subscription:
+                raise ValueError("Unable to locate your subscription. Please verify your account or contact support for assistance.")
+        
             return subscription
             
         except Exception as e:
@@ -268,85 +275,24 @@ class BaseSubscriptionService:
     def _get_subscription_with_features(self, subscription_id):
         """Get subscription with features using isolated connection"""
         try:
-            logger.info(f"[QUOTA DEBUG] Starting _get_subscription_with_features for subscription_id: {subscription_id}")
-            logger.info(f"[QUOTA DEBUG] subscription_id type: {type(subscription_id)}")
-            
             conn = self.db.get_connection()
             cursor = conn.cursor(dictionary=True)
             
-            query = f"""
-                SELECT us.*, sp.features, sp.app_id, sp.name as plan_name, sp.id as plan_internal_id
+            cursor.execute(f"""
+                SELECT us.*, sp.features, sp.app_id 
                 FROM {DB_TABLE_USER_SUBSCRIPTIONS} us
                 JOIN {DB_TABLE_SUBSCRIPTION_PLANS} sp ON us.plan_id = sp.id
                 WHERE us.id = %s
-            """
-            
-            logger.info(f"[QUOTA DEBUG] Executing query: {query}")
-            logger.info(f"[QUOTA DEBUG] Query parameters: [{subscription_id}]")
-            
-            cursor.execute(query, (subscription_id,))
+            """, (subscription_id,))
             
             subscription = cursor.fetchone()
             
-            logger.info(f"[QUOTA DEBUG] Raw query result: {subscription}")
-            logger.info(f"[QUOTA DEBUG] Query result type: {type(subscription)}")
-            
-            if subscription:
-                logger.info(f"[QUOTA DEBUG] Subscription found:")
-                logger.info(f"[QUOTA DEBUG]   - subscription.id: {subscription.get('id')}")
-                logger.info(f"[QUOTA DEBUG]   - subscription.user_id: {subscription.get('user_id')}")
-                logger.info(f"[QUOTA DEBUG]   - subscription.plan_id: {subscription.get('plan_id')}")
-                logger.info(f"[QUOTA DEBUG]   - subscription.app_id: {subscription.get('app_id')}")
-                logger.info(f"[QUOTA DEBUG]   - subscription.status: {subscription.get('status')}")
-                logger.info(f"[QUOTA DEBUG]   - plan_name: {subscription.get('plan_name')}")
-                logger.info(f"[QUOTA DEBUG]   - plan_internal_id: {subscription.get('plan_internal_id')}")
-                logger.info(f"[QUOTA DEBUG]   - features (raw): {subscription.get('features')}")
-                logger.info(f"[QUOTA DEBUG]   - features type: {type(subscription.get('features'))}")
-                logger.info(f"[QUOTA DEBUG]   - features length: {len(str(subscription.get('features'))) if subscription.get('features') else 0}")
-                
-                # Try to parse features to see what we get
-                features_raw = subscription.get('features')
-                if features_raw:
-                    if isinstance(features_raw, str):
-                        try:
-                            parsed_features = json.loads(features_raw)
-                            logger.info(f"[QUOTA DEBUG]   - parsed features: {parsed_features}")
-                            logger.info(f"[QUOTA DEBUG]   - parsed features type: {type(parsed_features)}")
-                            logger.info(f"[QUOTA DEBUG]   - parsed features keys: {list(parsed_features.keys()) if isinstance(parsed_features, dict) else 'Not a dict'}")
-                            
-                            if isinstance(parsed_features, dict):
-                                for key, value in parsed_features.items():
-                                    logger.info(f"[QUOTA DEBUG]     - {key}: {value} (type: {type(value)})")
-                        except json.JSONDecodeError as e:
-                            logger.error(f"[QUOTA DEBUG]   - JSON parse error: {e}")
-                    elif isinstance(features_raw, dict):
-                        logger.info(f"[QUOTA DEBUG]   - features already dict: {features_raw}")
-                        for key, value in features_raw.items():
-                            logger.info(f"[QUOTA DEBUG]     - {key}: {value} (type: {type(value)})")
-                    else:
-                        logger.warning(f"[QUOTA DEBUG]   - features unexpected type: {type(features_raw)}")
-            else:
-                logger.error(f"[QUOTA DEBUG] No subscription found with id: {subscription_id}")
-                
-                # Let's check what subscriptions exist for debugging
-                cursor.execute("SELECT id, user_id, plan_id, app_id FROM user_subscriptions LIMIT 5")
-                sample_subs = cursor.fetchall()
-                logger.info(f"[QUOTA DEBUG] Sample subscriptions in database: {sample_subs}")
-            
             cursor.close()
             conn.close()
-            
-            logger.info(f"[QUOTA DEBUG] Returning subscription: {subscription}")
             return subscription
             
         except Exception as e:
-            logger.error(f"[QUOTA DEBUG] Error getting subscription with features: {str(e)}")
-            logger.error(f"[QUOTA DEBUG] Exception type: {type(e)}")
-            logger.error(f"[QUOTA DEBUG] Exception traceback: {traceback.format_exc()}")
-            if 'cursor' in locals():
-                cursor.close()
-            if 'conn' in locals():
-                conn.close()
+            logger.error(f"Error getting subscription with features: {str(e)}")
             raise
 
     def get_current_usage(self, user_id, subscription_id, app_id):
@@ -390,97 +336,42 @@ class BaseSubscriptionService:
     def initialize_resource_quota(self, user_id, subscription_id, app_id, time_factor=1.0):
         """Initialize or reset resource quota for a subscription period with optional time factor"""
         try:
-            logger.info(f"[QUOTA INIT] Starting initialize_resource_quota")
-            logger.info(f"[QUOTA INIT] Parameters: user_id={user_id}, subscription_id={subscription_id}, app_id={app_id}, time_factor={time_factor}")
-            logger.info(f"[QUOTA INIT] Parameter types: user_id={type(user_id)}, subscription_id={type(subscription_id)}, app_id={type(app_id)}, time_factor={type(time_factor)}")
-            
             subscription_details = self._get_subscription_with_features(subscription_id)
             
             if not subscription_details:
-                logger.error(f"[QUOTA INIT] Subscription {subscription_id} not found")
+                logger.error(f"Subscription {subscription_id} not found")
                 return False
-            
-            logger.info(f"[QUOTA INIT] Subscription details retrieved: {subscription_details}")
             
             # Parse features
             features = self._parse_subscription_features(subscription_details.get('features', '{}'))
-            logger.info(f"[QUOTA INIT] Parsed features: {features}")
             
             # Set quota based on app with time factor
             quota_values = self._calculate_quota_values(app_id, features, time_factor)
-            logger.info(f"[QUOTA INIT] Calculated quota values: {quota_values}")
             
             # Create or update quota record with original values
-            result = self._save_quota_record_with_originals(user_id, subscription_id, app_id, subscription_details, quota_values)
-            logger.info(f"[QUOTA INIT] Save quota record result: {result}")
-            
-            return result
+            return self._save_quota_record_with_originals(user_id, subscription_id, app_id, subscription_details, quota_values)
             
         except Exception as e:
-            logger.error(f"[QUOTA INIT] Error initializing resource quota: {str(e)}")
-            logger.error(f"[QUOTA INIT] Exception type: {type(e)}")
-            logger.error(f"[QUOTA INIT] Exception traceback: {traceback.format_exc()}")
+            logger.error(f"Error initializing resource quota: {str(e)}")
+            logger.error(traceback.format_exc())
             return False
 
     def _parse_subscription_features(self, features_str):
         """Parse subscription features JSON"""
-        logger.info(f"[FEATURES DEBUG] Starting _parse_subscription_features")
-        logger.info(f"[FEATURES DEBUG] Input features_str: {features_str}")
-        logger.info(f"[FEATURES DEBUG] Input type: {type(features_str)}")
-        logger.info(f"[FEATURES DEBUG] Input repr: {repr(features_str)}")
-        logger.info(f"[FEATURES DEBUG] Input bool value: {bool(features_str)}")
-        
         if isinstance(features_str, str):
-            logger.info(f"[FEATURES DEBUG] Processing as string...")
             try:
-                parsed = json.loads(features_str)
-                logger.info(f"[FEATURES DEBUG] Successfully parsed JSON: {parsed}")
-                logger.info(f"[FEATURES DEBUG] Parsed type: {type(parsed)}")
-                if isinstance(parsed, dict):
-                    logger.info(f"[FEATURES DEBUG] Parsed dict keys: {list(parsed.keys())}")
-                    for key, value in parsed.items():
-                        logger.info(f"[FEATURES DEBUG]   - {key}: {value} (type: {type(value)})")
-                return parsed
-            except json.JSONDecodeError as e:
-                logger.error(f"[FEATURES DEBUG] JSON decode error: {e}")
-                logger.error(f"[FEATURES DEBUG] Failed string was: {repr(features_str)}")
-                logger.error(f"[FEATURES DEBUG] String length: {len(features_str)}")
+                return json.loads(features_str)
+            except json.JSONDecodeError:
                 return {}
-        elif isinstance(features_str, dict):
-            logger.info(f"[FEATURES DEBUG] Already a dict: {features_str}")
-            for key, value in features_str.items():
-                logger.info(f"[FEATURES DEBUG]   - {key}: {value} (type: {type(value)})")
-            return features_str
-        elif features_str is None:
-            logger.warning(f"[FEATURES DEBUG] features_str is None")
-            return {}
-        else:
-            logger.warning(f"[FEATURES DEBUG] Unexpected type: {type(features_str)}")
-            result = features_str or {}
-            logger.info(f"[FEATURES DEBUG] Fallback result: {result}")
-            return result
+        return features_str or {}
 
     def _calculate_quota_values(self, app_id, features, time_factor=1.0):
         """Calculate quota values based on app and features with optional time factor for mid-cycle upgrades"""
         import math
         
-        logger.info(f"[QUOTA CALC DEBUG] Starting _calculate_quota_values")
-        logger.info(f"[QUOTA CALC DEBUG] Parameters: app_id={app_id}, time_factor={time_factor}")
-        logger.info(f"[QUOTA CALC DEBUG] Features received: {features}")
-        logger.info(f"[QUOTA CALC DEBUG] Features type: {type(features)}")
-        
-        if isinstance(features, dict):
-            logger.info(f"[QUOTA CALC DEBUG] Features dict keys: {list(features.keys())}")
-            for key, value in features.items():
-                logger.info(f"[QUOTA CALC DEBUG]   - {key}: {value} (type: {type(value)})")
-        
         if app_id == 'marketfit':
-            logger.info(f"[QUOTA CALC DEBUG] MarketFit branch - app_id: {app_id}")
             base_doc_pages = features.get('document_pages')
             base_perplexity = features.get('perplexity_requests')
-            
-            logger.info(f"[QUOTA CALC DEBUG] base_doc_pages: {base_doc_pages} (type: {type(base_doc_pages)})")
-            logger.info(f"[QUOTA CALC DEBUG] base_perplexity: {base_perplexity} (type: {type(base_perplexity)})")
             
             return {
                 'document_pages_quota': math.ceil(base_doc_pages * time_factor),
@@ -492,98 +383,40 @@ class BaseSubscriptionService:
                 'original_requests_quota': 0
             }
         else:  # saleswit
-            logger.info(f"[QUOTA CALC DEBUG] SalesWit branch - app_id: {app_id}")
-            logger.info(f"[QUOTA CALC DEBUG] Features received: {features}")
-            logger.info(f"[QUOTA CALC DEBUG] Features type: {type(features)}")
-            logger.info(f"[QUOTA CALC DEBUG] Time factor: {time_factor}")
-            
-            # Check if 'requests' key exists
-            has_requests_key = 'requests' in features if isinstance(features, dict) else False
-            logger.info(f"[QUOTA CALC DEBUG] Has 'requests' key: {has_requests_key}")
-            
             base_requests = features.get('requests')
-            logger.info(f"[QUOTA CALC DEBUG] base_requests from features.get('requests'): {base_requests}")
-            logger.info(f"[QUOTA CALC DEBUG] base_requests type: {type(base_requests)}")
-            logger.info(f"[QUOTA CALC DEBUG] base_requests is None: {base_requests is None}")
-            logger.info(f"[QUOTA CALC DEBUG] base_requests bool value: {bool(base_requests)}")
-            
-            if base_requests is None:
-                logger.error(f"[QUOTA CALC DEBUG] PROBLEM: requests key not found in features!")
-                logger.error(f"[QUOTA CALC DEBUG] Available keys: {list(features.keys()) if isinstance(features, dict) else 'Not a dict'}")
-                logger.error(f"[QUOTA CALC DEBUG] Features raw value: {features}")
-                base_requests = 0
-            elif not isinstance(base_requests, (int, float)):
-                logger.warning(f"[QUOTA CALC DEBUG] base_requests is not a number: {base_requests} (type: {type(base_requests)})")
-                try:
-                    base_requests = int(base_requests)
-                    logger.info(f"[QUOTA CALC DEBUG] Converted to int: {base_requests}")
-                except (ValueError, TypeError):
-                    logger.error(f"[QUOTA CALC DEBUG] Failed to convert to int, using 0")
-                    base_requests = 0
-            
-            calculated_quota = math.ceil(base_requests * time_factor) if base_requests else 0
-            logger.info(f"[QUOTA CALC DEBUG] Calculated requests_quota: {calculated_quota}")
-            logger.info(f"[QUOTA CALC DEBUG] original_requests_quota will be: {base_requests}")
-            
-            quota_result = {
+            # ADD THIS DEBUG LOGGING
+            logger.info(f"[QUOTA DEBUG] SalesWit quota calculation:")
+            logger.info(f"[QUOTA DEBUG] features: {features}")
+            logger.info(f"[QUOTA DEBUG] base_requests: {base_requests}")
+            logger.info(f"[QUOTA DEBUG] time_factor: {time_factor}")
+            return {
                 'document_pages_quota': 0,
                 'perplexity_requests_quota': 0,
-                'requests_quota': calculated_quota,
+                'requests_quota': math.ceil(base_requests * time_factor),
                 # Keep originals for reference
                 'original_document_pages_quota': 0,
                 'original_perplexity_requests_quota': 0,
                 'original_requests_quota': base_requests
             }
             
-            logger.info(f"[QUOTA CALC DEBUG] Final quota_result: {quota_result}")
-            return quota_result
-                
     def _save_quota_record_with_originals(self, user_id, subscription_id, app_id, subscription_details, quota_values):
         """Save or update quota record with original quota tracking"""
         try:
-            logger.info(f"[QUOTA SAVE DEBUG] Starting _save_quota_record_with_originals")
-            logger.info(f"[QUOTA SAVE DEBUG] Parameters:")
-            logger.info(f"[QUOTA SAVE DEBUG]   user_id: {user_id}")
-            logger.info(f"[QUOTA SAVE DEBUG]   subscription_id: {subscription_id}")
-            logger.info(f"[QUOTA SAVE DEBUG]   app_id: {app_id}")
-            logger.info(f"[QUOTA SAVE DEBUG]   quota_values: {quota_values}")
-            
             conn = self.db.get_connection()
             cursor = conn.cursor(dictionary=True)
             
             # Check if existing record exists
-            check_query = f"""
-                SELECT id, document_pages_quota, perplexity_requests_quota, requests_quota,
-                    original_document_pages_quota, original_perplexity_requests_quota, original_requests_quota,
-                    current_addon_document_pages, current_addon_perplexity_requests, current_addon_requests,
-                    created_at
-                FROM {DB_TABLE_RESOURCE_USAGE}
+            cursor.execute(f"""
+                SELECT id FROM {DB_TABLE_RESOURCE_USAGE}
                 WHERE user_id = %s AND subscription_id = %s AND app_id = %s
                 ORDER BY created_at DESC LIMIT 1
-            """
-            
-            logger.info(f"[QUOTA SAVE DEBUG] Checking for existing record with query: {check_query}")
-            logger.info(f"[QUOTA SAVE DEBUG] Query params: [{user_id}, {subscription_id}, {app_id}]")
-            
-            cursor.execute(check_query, (user_id, subscription_id, app_id))
+            """, (user_id, subscription_id, app_id))
             
             quota_record = cursor.fetchone()
             
-            logger.info(f"[QUOTA SAVE DEBUG] Existing quota record: {quota_record}")
-            
             if quota_record:
                 # Update existing record
-                logger.info(f"[QUOTA SAVE DEBUG] Taking UPDATE path for existing record {quota_record['id']}")
-                logger.info(f"[QUOTA SAVE DEBUG] Current values in DB:")
-                logger.info(f"[QUOTA SAVE DEBUG]   - requests_quota: {quota_record.get('requests_quota')}")
-                logger.info(f"[QUOTA SAVE DEBUG]   - original_requests_quota: {quota_record.get('original_requests_quota')}")
-                logger.info(f"[QUOTA SAVE DEBUG]   - current_addon_requests: {quota_record.get('current_addon_requests')}")
-                
-                logger.info(f"[QUOTA SAVE DEBUG] Values being set:")
-                logger.info(f"[QUOTA SAVE DEBUG]   - requests_quota: {quota_values['requests_quota']}")
-                logger.info(f"[QUOTA SAVE DEBUG]   - original_requests_quota: {quota_values['original_requests_quota']}")
-                
-                update_query = f"""
+                cursor.execute(f"""
                     UPDATE {DB_TABLE_RESOURCE_USAGE}
                     SET document_pages_quota = %s,
                         perplexity_requests_quota = %s,
@@ -596,9 +429,7 @@ class BaseSubscriptionService:
                         current_addon_requests = 0,
                         updated_at = NOW()
                     WHERE id = %s
-                """
-                
-                update_params = (
+                """, (
                     quota_values['document_pages_quota'],
                     quota_values['perplexity_requests_quota'],
                     quota_values['requests_quota'],
@@ -606,78 +437,39 @@ class BaseSubscriptionService:
                     quota_values['original_perplexity_requests_quota'],
                     quota_values['original_requests_quota'],
                     quota_record['id']
-                )
-                
-                logger.info(f"[QUOTA SAVE DEBUG] Update query: {update_query}")
-                logger.info(f"[QUOTA SAVE DEBUG] Update params: {update_params}")
-                
-                cursor.execute(update_query, update_params)
-                logger.info(f"[QUOTA SAVE DEBUG] Updated existing quota record {quota_record['id']}")
+                ))
+                logger.info(f"Updated existing quota record {quota_record['id']}")
             else:
                 # Create new record
-                logger.info(f"[QUOTA SAVE DEBUG] Taking INSERT path - creating new record")
-                
-                period_start = subscription_details.get('current_period_start') or datetime.now()
-                period_end = subscription_details.get('current_period_end') or (datetime.now() + timedelta(days=30))
-                
-                logger.info(f"[QUOTA SAVE DEBUG] Period start: {period_start}")
-                logger.info(f"[QUOTA SAVE DEBUG] Period end: {period_end}")
-                
-                insert_query = f"""
+                cursor.execute(f"""
                     INSERT INTO {DB_TABLE_RESOURCE_USAGE}
                     (user_id, subscription_id, app_id, billing_period_start, billing_period_end,
                     document_pages_quota, perplexity_requests_quota, requests_quota,
                     original_document_pages_quota, original_perplexity_requests_quota, original_requests_quota,
                     current_addon_document_pages, current_addon_perplexity_requests, current_addon_requests)
                     VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, 0, 0, 0)
-                """
-                
-                insert_params = (
+                """, (
                     user_id,
                     subscription_id,
                     app_id,
-                    period_start,
-                    period_end,
+                    subscription_details.get('current_period_start') or datetime.now(),
+                    subscription_details.get('current_period_end') or (datetime.now() + timedelta(days=30)),
                     quota_values['document_pages_quota'],
                     quota_values['perplexity_requests_quota'],
                     quota_values['requests_quota'],
                     quota_values['original_document_pages_quota'],
                     quota_values['original_perplexity_requests_quota'],
                     quota_values['original_requests_quota']
-                )
-                
-                logger.info(f"[QUOTA SAVE DEBUG] Insert query: {insert_query}")
-                logger.info(f"[QUOTA SAVE DEBUG] Insert params: {insert_params}")
-                
-                cursor.execute(insert_query, insert_params)
-                logger.info(f"[QUOTA SAVE DEBUG] Created new quota record")
+                ))
             
             conn.commit()
-            
-            # Verify what was actually saved
-            cursor.execute(f"""
-                SELECT * FROM {DB_TABLE_RESOURCE_USAGE}
-                WHERE user_id = %s AND subscription_id = %s AND app_id = %s
-                ORDER BY created_at DESC LIMIT 1
-            """, (user_id, subscription_id, app_id))
-            
-            final_record = cursor.fetchone()
-            logger.info(f"[QUOTA SAVE DEBUG] Final saved record: {final_record}")
-            
             cursor.close()
             conn.close()
             
-            logger.info(f"[QUOTA SAVE DEBUG] Successfully saved quota record")
             return True
             
         except Exception as e:
-            logger.error(f"[QUOTA SAVE DEBUG] Error saving quota record: {str(e)}")
-            logger.error(f"[QUOTA SAVE DEBUG] Exception type: {type(e)}")
-            logger.error(f"[QUOTA SAVE DEBUG] Exception traceback: {traceback.format_exc()}")
-            if 'cursor' in locals() and cursor:
-                cursor.close()
-            if 'conn' in locals() and conn:
-                conn.close()
+            logger.error(f"Error saving quota record: {str(e)}")
             raise
         
     def _add_temporary_resources(self, user_id, subscription_id, app_id):

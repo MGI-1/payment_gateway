@@ -55,7 +55,7 @@ class RazorpayProvider:
         if not self.initialized or not self.client:
             return {
                 'error': True,
-                'message': 'Razorpay client not initialized'
+                'message': 'Unable to connect to payment processor (Razorpay). Please try again or use an alternative payment method.'
             }
         
         try:
@@ -103,7 +103,7 @@ class RazorpayProvider:
             
             logger.info(f"[RAZORPAY DEBUG] Full subscription_data: {subscription_data}")    
             logger.info(f"Creating Razorpay subscription for user {user_id} with plan {plan_id}")
-            razorpay_subscription = self.client.subscription.create(subscription_data, timeout=120)
+            razorpay_subscription = self.client.subscription.create(subscription_data, timeout=60)
             
             return {
                 'id': razorpay_subscription.get('id'),
@@ -117,7 +117,7 @@ class RazorpayProvider:
             logger.error(traceback.format_exc())
             return {
                 'error': True,
-                'message': str(e)
+                'message': 'Unable to connect to payment processor (Razorpay). Please try again or use an alternative payment method.'
             }
     
     def create_payment_link(self, invoice_data):
@@ -141,7 +141,7 @@ class RazorpayProvider:
                 'callback_method': 'get'
             }
             
-            payment_link = self.client.payment_link.create(payment_link_data, timeout=120)
+            payment_link = self.client.payment_link.create(payment_link_data, timeout=60)
             
             return {
                 'success': True,
@@ -185,7 +185,7 @@ class RazorpayProvider:
                 result = self.client.subscription.cancel(
                     subscription_id,
                     {"cancel_at_cycle_end": cancel_at_cycle_end},
-                    timeout=120
+                    timeout=60
                 )
                 
                 return {
@@ -209,7 +209,7 @@ class RazorpayProvider:
         if not self.initialized or not self.client:
             return {
                 'error': True,
-                'message': 'Razorpay client not initialized'
+                'message': 'Unable to connect to payment processor (Razorpay). Please try again or use an alternative payment method.'
             }
         
         try:
@@ -248,7 +248,7 @@ class RazorpayProvider:
             }
             
             logger.info(f"Creating Razorpay subscription with specific offer: {offer_id} for plan: {razorpay_plan_id}")
-            razorpay_subscription = self.client.subscription.create(subscription_data, timeout=120)
+            razorpay_subscription = self.client.subscription.create(subscription_data, timeout=60)
             
             return {
                 'id': razorpay_subscription.get('id'),
@@ -262,7 +262,7 @@ class RazorpayProvider:
             logger.error(f"Error creating Razorpay subscription with specific offer: {str(e)}")
             return {
                 'error': True,
-                'message': str(e)
+                'message': 'Unable to connect to payment processor (Razorpay). Please try again or use an alternative payment method.'
             }
 
     def fetch_subscription(self, subscription_id):
@@ -285,7 +285,7 @@ class RazorpayProvider:
             logger.info(f"Fetching Razorpay subscription: {subscription_id}")
             
             # Fetch the subscription
-            subscription = self.client.subscription.fetch(subscription_id, timeout=120)
+            subscription = self.client.subscription.fetch(subscription_id, timeout=60)
             
             return {
                 'success': True,
