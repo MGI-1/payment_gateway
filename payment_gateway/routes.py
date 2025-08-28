@@ -359,7 +359,8 @@ def init_payment_routes(app, payment_service, paypal_service=None):
             
             # Parse metadata safely
             metadata = subscription.get('metadata', {})
-            if isinstance(metadata, str):
+            if isinstance(metadata,
+             str):
                 try:
                     metadata = json.loads(metadata)
                 except json.JSONDecodeError:
@@ -367,31 +368,13 @@ def init_payment_routes(app, payment_service, paypal_service=None):
                     metadata = {}
             
             # Handle upgrade approval completion
-            if metadata.get('upgrade_pending_approval'):
-                logger.info(f"Processing upgrade approval completion for subscription {subscription['id']}")
-                
-                result = paypal_service.complete_simple_upgrade_after_approval(subscription['id'])
-                
-                if result.get('error'):
-                    error_msg = result.get('message', 'Unknown error occurred during upgrade completion')
-                    logger.error(f"Upgrade completion failed for {subscription['id']}: {error_msg}")
-                    return redirect(f"{get_frontend_url()}/subscription-dashboard?error={error_msg}")
-                
-                logger.info(f"Upgrade approval completed successfully for subscription {subscription['id']}")
-                success_message = "Upgrade%20completed%20successfully!%20Your%20new%20plan%20is%20now%20active%20with%20temporary%20resources%20until%20next%20billing%20cycle."
-                return redirect(f"{get_frontend_url()}/subscription-dashboard?upgrade=success&message={success_message}")
-            
-            # Handle regular subscription success cases
+            if subscription['status'] == 'active':
+                        logger.info(f"Subscription {subscription['id']} already active via webhook")
+                        return redirect(f"{get_frontend_url()}/subscription-dashboard?status=active&message=Your%20subscription%20is%20active%20and%20ready%20to%20use!")
             else:
-                logger.info(f"Handling regular subscription return for {subscription['id']}, current status: {subscription.get('status')}")
+                        logger.info(f"Subscription {subscription['id']} still processing")
+                        return redirect(f"{get_frontend_url()}/subscription-dashboard?status=processing&message=Your%20subscription%20is%20being%20processed.%20Please%20check%20back%20in%20a%20few%20minutes.")
                 
-                if subscription['status'] == 'active':
-                    logger.info(f"Subscription {subscription['id']} already active via webhook")
-                    return redirect(f"{get_frontend_url()}/subscription-dashboard?status=active&message=Your%20subscription%20is%20active%20and%20ready%20to%20use!")
-                else:
-                    logger.info(f"Subscription {subscription['id']} still processing")
-                    return redirect(f"{get_frontend_url()}/subscription-dashboard?status=processing&message=Your%20subscription%20is%20being%20processed.%20Please%20check%20back%20in%20a%20few%20minutes.")
-            
         except Exception as e:
             logger.error(f"Error in PayPal success handler: {str(e)}")
             import traceback
@@ -494,23 +477,60 @@ def init_payment_routes(app, payment_service, paypal_service=None):
             logger.info(f"PayPal approval completion: subscription_id={subscription_id}, token={token}")
             
             if subscription_id:
-                # ✅ FIX: Find subscription by PayPal ID, not internal ID
+                # Find subscription by PayPal ID
                 subscription = paypal_service._get_subscription_by_paypal_id(subscription_id)
                 
                 if not subscription:
                     logger.error(f"Subscription not found by PayPal ID: {subscription_id}")
                     return redirect(f"{get_frontend_url()}/subscription-dashboard?upgrade=error&message=Subscription not found")
                 
-                # Complete the upgrade using internal subscription ID
-                result = paypal_service.complete_approved_upgrade(subscription['id'])  # Use internal ID
+                # Parse metadata safely
+                metadata = subscription.get('metadata', {})
+                if isinstance(metadata, str):
+                    try:
+                        metadata = json.loads(metadata)
+                    except:
+                        metadata = {}
                 
-                if result.get('success'):
-                    logger.info(f"Approval completed successfully for subscription {subscription['id']}")
-                    return redirect(f"{get_frontend_url()}/subscription-dashboard?upgrade=success&message=Upgrade completed successfully! Your subscription has been updated.")
+                # Handle different types of approvals
+                if metadata.get('simple_upgrade_pending'):
+                    # This is a simple upgrade approval completion - DON'T clear metadata yet
+                    logger.info(f"Processing simple upgrade approval completion for subscription {subscription['id']}")
+                    
+                    # Log the approval completion
+                    paypal_service.db.log_subscription_action(
+                        subscription['id'],
+                        'simple_upgrade_approved',
+                        {
+                            'approved_at': datetime.now().isoformat(),
+                            'approval_method': 'paypal_redirect'
+                        },
+                        f"user_{subscription['user_id']}"
+                    )
+                    
+                    logger.info(f"Simple upgrade approval completed successfully for subscription {subscription['id']}")
+                    success_message = "Upgrade%20completed%20successfully!%20Your%20new%20plan%20billing%20is%20now%20active.%20Temporary%20resources%20will%20continue%20until%20your%20next%20billing%20cycle."
+                    return redirect(f"{get_frontend_url()}/subscription-dashboard?upgrade=success&message={success_message}")
+
+                elif metadata.get('upgrade_pending_approval'):
+                    # This is a complex upgrade approval completion (annual to annual)
+                    logger.info(f"Processing complex upgrade approval completion for subscription {subscription['id']}")
+                    
+                    result = paypal_service.complete_approved_upgrade(subscription['id'])
+                    
+                    if result.get('error'):
+                        error_msg = result.get('message', 'Unknown error occurred during upgrade completion')
+                        logger.error(f"Complex upgrade completion failed for {subscription['id']}: {error_msg}")
+                        return redirect(f"{get_frontend_url()}/subscription-dashboard?error={error_msg}")
+                    
+                    logger.info(f"Complex upgrade approval completed successfully for subscription {subscription['id']}")
+                    success_message = "Upgrade%20completed%20successfully!%20Your%20new%20plan%20is%20now%20active."
+                    return redirect(f"{get_frontend_url()}/subscription-dashboard?upgrade=success&message={success_message}")
+                
                 else:
-                    error_msg = result.get('message', 'Unknown error occurred')
-                    logger.error(f"Approval completion failed for {subscription['id']}: {error_msg}")
-                    return redirect(f"{get_frontend_url()}/subscription-dashboard?upgrade=error&message={error_msg}")
+                    # No pending upgrade found
+                    logger.warning(f"No pending upgrade found for subscription {subscription['id']}")
+                    return redirect(f"{get_frontend_url()}/subscription-dashboard?upgrade=error&message=No pending upgrade found")
             
             logger.warning("PayPal approval completion called without subscription_id")
             return redirect(f"{get_frontend_url()}/subscription-dashboard?upgrade=error&message=Invalid approval completion")
