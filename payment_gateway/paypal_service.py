@@ -366,10 +366,7 @@ class PayPalService(BaseSubscriptionService):
             if not subscription:
                 return {'error': True, 'message': 'Subscription not found'}
             
-            # ✅ ADD THESE DEBUG LINES
-            logger.info(f"[DEBUG] Raw metadata from DB: {subscription.get('metadata')}")
-            logger.info(f"[DEBUG] Metadata type: {type(subscription.get('metadata'))}")
-            
+            # Parse metadata safely
             metadata = subscription.get('metadata', {})
             if isinstance(metadata, str):
                 try:
@@ -379,44 +376,52 @@ class PayPalService(BaseSubscriptionService):
                     logger.error(f"[DEBUG] JSON parse error: {e}")
                     metadata = {}
             
-            # ✅ ADD THESE DEBUG LINES
             logger.info(f"[DEBUG] Final metadata: {metadata}")
-            logger.info(f"[DEBUG] Has upgrade_pending_approval: {metadata.get('upgrade_pending_approval')}")
-            logger.info(f"[DEBUG] Pending plan ID: {metadata.get('pending_plan_id')}")
+            logger.info(f"[DEBUG] Has paypal_approval_required: {metadata.get('paypal_approval_required')}")
             
-            if not metadata.get('upgrade_pending_approval'):
+            # Handle proration-based approval completion
+            if metadata.get('paypal_approval_required'):
+                pending_upgrade = metadata.get('pending_paypal_upgrade', {})
+                new_plan_id = pending_upgrade.get('new_plan_id')
+                time_factor = pending_upgrade.get('time_factor', 1.0)
+                
+                logger.info(f"[DEBUG] Pending plan ID: {new_plan_id}")
+                logger.info(f"[DEBUG] Time factor: {time_factor}")
+                
+                if not new_plan_id:
+                    return {'error': True, 'message': 'No pending plan found in proration upgrade'}
+                
+                # Complete upgrade with proportional resources
+                self._complete_upgrade_locally_with_time_factor(subscription_id, new_plan_id, time_factor)
+                
+                # Clear both approval metadata keys
+                self._clear_approval_metadata(subscription_id)
+                self._clear_pending_upgrade(subscription_id)
+                
+                # Log the completion
+                self.db.log_subscription_action(
+                    subscription_id,
+                    'proration_approval_completed',
+                    {
+                        'new_plan_id': new_plan_id,
+                        'time_factor': time_factor,
+                        'completed_at': datetime.now().isoformat()
+                    },
+                    f"user_{subscription['user_id']}"
+                )
+                
+                return {
+                    'success': True,
+                    'subscription_id': subscription_id,
+                    'new_plan_id': new_plan_id,
+                    'message': 'Proration upgrade completed successfully after approval'
+                }
+            
+            else:
                 return {
                     'error': True, 
                     'message': f'No pending approval found for subscription {subscription_id}. Metadata keys: {list(metadata.keys())}'
                 }
-            
-            new_plan_id = metadata.get('pending_plan_id')
-            if not new_plan_id:
-                return {'error': True, 'message': 'No pending plan found'}
-            
-            # Complete the upgrade locally
-            self._complete_upgrade_locally(subscription_id, new_plan_id)
-            
-            # Clear approval metadata
-            self._clear_approval_metadata(subscription_id)
-            
-            # Log the completion
-            self.db.log_subscription_action(
-                subscription_id,
-                'paypal_approval_completed',
-                {
-                    'new_plan_id': new_plan_id,
-                    'completed_at': datetime.now().isoformat()
-                },
-                f"user_{subscription['user_id']}"
-            )
-            
-            return {
-                'success': True,
-                'subscription_id': subscription_id,
-                'new_plan_id': new_plan_id,
-                'message': 'Upgrade completed successfully after approval'
-            }
             
         except Exception as e:
             logger.error(f"Error completing approved upgrade: {str(e)}")

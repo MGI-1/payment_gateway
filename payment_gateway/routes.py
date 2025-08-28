@@ -513,18 +513,18 @@ def init_payment_routes(app, payment_service, paypal_service=None):
                     success_message = "Upgrade%20completed%20successfully!%20Your%20new%20plan%20billing%20is%20now%20active.%20Temporary%20resources%20will%20continue%20until%20your%20next%20billing%20cycle."
                     return redirect(f"{get_frontend_url()}/subscription-dashboard?upgrade=success&message={success_message}")
 
-                elif metadata.get('upgrade_pending_approval'):
-                    # This is a complex upgrade approval completion (annual to annual)
-                    logger.info(f"Processing complex upgrade approval completion for subscription {subscription['id']}")
+                elif metadata.get('paypal_approval_required'):
+                    # Handle proration-based upgrade approval completion
+                    logger.info(f"Processing proration upgrade approval completion for subscription {subscription['id']}")
                     
                     result = paypal_service.complete_approved_upgrade(subscription['id'])
                     
                     if result.get('error'):
                         error_msg = result.get('message', 'Unknown error occurred during upgrade completion')
-                        logger.error(f"Complex upgrade completion failed for {subscription['id']}: {error_msg}")
+                        logger.error(f"Proration upgrade completion failed for {subscription['id']}: {error_msg}")
                         return redirect(f"{get_frontend_url()}/subscription-dashboard?error={error_msg}")
                     
-                    logger.info(f"Complex upgrade approval completed successfully for subscription {subscription['id']}")
+                    logger.info(f"Proration upgrade approval completed successfully for subscription {subscription['id']}")
                     success_message = "Upgrade%20completed%20successfully!%20Your%20new%20plan%20is%20now%20active."
                     return redirect(f"{get_frontend_url()}/subscription-dashboard?upgrade=success&message={success_message}")
                 
