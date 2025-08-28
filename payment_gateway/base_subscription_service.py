@@ -158,36 +158,6 @@ class BaseSubscriptionService:
             logger.error(f"Error clearing upgrade pending metadata: {str(e)}")
             raise
 
-    def _set_upgrade_pending_metadata(self, subscription_id, new_plan_id):
-        """Set metadata for upgrade pending approval"""
-        try:
-            upgrade_metadata = {
-                'upgrade_pending_approval': True,
-                'pending_plan_id': new_plan_id,
-                'upgrade_initiated_at': datetime.now().isoformat(),
-                'upgrade_type': 'paypal_simple_pending'
-            }
-            
-            conn = self.db.get_connection()
-            cursor = conn.cursor()
-            
-            cursor.execute(f"""
-                UPDATE {DB_TABLE_USER_SUBSCRIPTIONS}
-                SET metadata = JSON_MERGE_PATCH(IFNULL(metadata, '{{}}'), %s),
-                    updated_at = NOW()
-                WHERE id = %s
-            """, (json.dumps(upgrade_metadata), subscription_id))
-            
-            conn.commit()
-            cursor.close()
-            conn.close()
-            
-            logger.info(f"Set pending approval metadata for subscription {subscription_id} to plan {new_plan_id}")
-            
-        except Exception as e:
-            logger.error(f"Error setting upgrade pending metadata: {str(e)}")
-            raise
-
     def _update_subscription_plan(self, subscription_id, new_plan_id):
         """Update subscription plan in database"""
         try:

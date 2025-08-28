@@ -1155,30 +1155,18 @@ class PayPalService(BaseSubscriptionService):
             raise
 
     def _handle_simple_upgrade(self, subscription, new_plan, app_id):
-        """Handle simple PayPal upgrade (monthly to any) with proper approval handling"""
+        """Handle simple PayPal upgrade (monthly to any) with proper temporary resource allocation"""
         try:
             paypal_subscription_id = subscription['paypal_subscription_id']
             new_paypal_plan_id = new_plan['paypal_plan_id']
             
             logger.info(f"[SIMPLE UPGRADE] Starting upgrade for {paypal_subscription_id} to plan {new_paypal_plan_id}")
             
-            # Update PayPal subscription immediately
+            # Update PayPal subscription plan
             result = self.paypal.update_subscription_plan_only(
                 paypal_subscription_id,
                 new_paypal_plan_id
             )
-            
-            # ✅ ADD COMPREHENSIVE PAYPAL RESULT LOGGING
-            logger.info("=== PAYPAL SERVICE DEBUG ===")
-            logger.info(f"PayPal provider result type: {type(result)}")
-            logger.info(f"PayPal provider result: {json.dumps(result, indent=2, default=str)}")
-            logger.info(f"Result get error: {result.get('error')}")
-            logger.info(f"Result get success: {result.get('success')}")
-            logger.info(f"Result get requires_approval: {result.get('requires_approval')}")
-            logger.info(f"Result get approval_url: {result.get('approval_url')}")
-            logger.info(f"Result get status: {result.get('status')}")
-            logger.info(f"Result get message: {result.get('message')}")
-            logger.info("============================")
             
             if result.get('error'):
                 logger.error(f"PayPal upgrade failed: {result['message']}")
@@ -1186,22 +1174,8 @@ class PayPalService(BaseSubscriptionService):
             
             if result.get('requires_approval'):
                 logger.info(f"[SIMPLE UPGRADE] Approval required - setting pending metadata")
-                # APPROVAL REQUIRED: Only set pending metadata
-                self._set_upgrade_pending_metadata(subscription['id'], new_plan['id'])
                 
-                return {
-                    'success': True,
-                    'upgrade_type': 'paypal_pending_approval',
-                    'subscription_id': subscription['id'],
-                    'new_plan_id': new_plan['id'],
-                    'requires_approval': True,
-                    'approval_url': result.get('approval_url'),
-                    'message': 'Please complete authorization on PayPal to finalize your upgrade.',
-                    'approval_reason': result.get('message', 'Additional authorization required')
-                }
-            else:
-                logger.info(f"[SIMPLE UPGRADE] No approval required - completing immediately")
-                # NO APPROVAL: Complete upgrade immediately
+                # Set simple upgrade pending metadata
                 self._update_subscription_plan_and_metadata(
                     subscription['id'], 
                     new_plan['id'],
@@ -1209,7 +1183,36 @@ class PayPalService(BaseSubscriptionService):
                         'simple_upgrade_pending': True,
                         'upgraded_to_plan': new_plan['id'],
                         'upgrade_timestamp': datetime.now().isoformat(),
-                        'upgrade_type': 'paypal_immediate',
+                        'upgrade_type': 'paypal_simple_with_approval',
+                        'temporary_resources_added': True
+                    }
+                )
+                
+                # Add temporary resources immediately
+                self._add_temporary_resources(subscription['user_id'], subscription['id'], app_id)
+                
+                return {
+                    'success': True,
+                    'upgrade_type': 'paypal_simple_with_approval',
+                    'subscription_id': subscription['id'],
+                    'new_plan_id': new_plan['id'],
+                    'requires_approval': True,
+                    'approval_url': result.get('approval_url'),
+                    'message': 'Your plan has been upgraded with temporary resources. Please complete authorization on PayPal to finalize the billing update.',
+                    'temporary_resources_added': True
+                }
+            else:
+                logger.info(f"[SIMPLE UPGRADE] No approval required - completing immediately")
+                
+                # Set simple upgrade pending metadata (will be cleared by webhook)
+                self._update_subscription_plan_and_metadata(
+                    subscription['id'], 
+                    new_plan['id'],
+                    upgrade_metadata={
+                        'simple_upgrade_pending': True,
+                        'upgraded_to_plan': new_plan['id'],
+                        'upgrade_timestamp': datetime.now().isoformat(),
+                        'upgrade_type': 'paypal_simple_immediate',
                         'temporary_resources_added': True
                     }
                 )
@@ -1219,89 +1222,18 @@ class PayPalService(BaseSubscriptionService):
                 
                 return {
                     'success': True,
-                    'upgrade_type': 'paypal_immediate',
+                    'upgrade_type': 'paypal_simple_immediate',
                     'subscription_id': subscription['id'],
                     'new_plan_id': new_plan['id'],
                     'requires_approval': False,
-                    'message': 'PayPal subscription upgraded successfully. Temporary resources added until next billing cycle.',
+                    'message': 'Plan upgraded successfully with temporary resources until your next billing cycle.',
                     'temporary_resources_added': True
                 }
             
         except Exception as e:
             logger.error(f"Error in simple PayPal upgrade: {str(e)}")
-            logger.error(f"Exception type: {type(e)}")
-            import traceback
-            logger.error(f"Traceback: {traceback.format_exc()}")
             raise
 
-    def complete_simple_upgrade_after_approval(self, subscription_id):
-        """Complete simple upgrade after PayPal approval"""
-        try:
-            # Get subscription with pending upgrade
-            subscription = self._get_subscription_details(subscription_id)
-            if not subscription:
-                return {'error': True, 'message': 'Subscription not found'}
-            
-            metadata = subscription.get('metadata', {})
-            if isinstance(metadata, str):
-                try:
-                    metadata = json.loads(metadata)
-                except:
-                    metadata = {}
-            
-            if not metadata.get('upgrade_pending_approval'):
-                return {'error': True, 'message': 'No pending upgrade found'}
-            
-            new_plan_id = metadata.get('pending_plan_id')
-            if not new_plan_id:
-                return {'error': True, 'message': 'No pending plan ID found'}
-            
-            # Get new plan details
-            new_plan = self._get_plan(new_plan_id)
-            if not new_plan:
-                return {'error': True, 'message': 'New plan not found'}
-            
-            # Now complete the upgrade with proper metadata
-            self._update_subscription_plan_and_metadata(
-                subscription_id, 
-                new_plan_id,
-                upgrade_metadata={
-                    'simple_upgrade_pending': True,
-                    'upgraded_to_plan': new_plan_id,
-                    'upgrade_timestamp': datetime.now().isoformat(),
-                    'upgrade_type': 'paypal_approved',
-                    'temporary_resources_added': True,
-                    'approval_completed_at': datetime.now().isoformat()
-                }
-            )
-            
-            # Add temporary resources
-            self._add_temporary_resources(subscription['user_id'], subscription_id, subscription['app_id'])
-            
-            # Log the completion
-            self.db.log_subscription_action(
-                subscription_id,
-                'simple_upgrade_approved',
-                {
-                    'old_plan': subscription['plan_id'],
-                    'new_plan': new_plan_id,
-                    'upgrade_type': 'paypal_simple_with_approval'
-                },
-                f"user_{subscription['user_id']}"
-            )
-            
-            logger.info(f"Completed simple upgrade after approval: subscription {subscription_id} to plan {new_plan_id}")
-            
-            return {
-                'success': True,
-                'subscription_id': subscription_id,
-                'new_plan_id': new_plan_id,
-                'message': 'Simple upgrade completed successfully after approval'
-            }
-            
-        except Exception as e:
-            logger.error(f"Error completing simple upgrade after approval: {str(e)}")
-            return {'error': True, 'message': str(e)}
 
     def _handle_annual_upgrade(self, subscription, current_plan, new_plan, app_id, billing_cycle_info, resource_info):
         """Handle annual to annual PayPal upgrade with correct proration calculation"""
