@@ -81,8 +81,8 @@ def get_api_base_url():
         return react_api_url
     
     # Development fallback
-    #if FLASK_ENV == 'development':
-    #    return 'http://localhost:5000'
+    if FLASK_ENV == 'development':
+        return 'http://localhost:5000'
     
     # Production fallback: Azure App Service provides this automatically
     website_hostname = os.getenv('WEBSITE_HOSTNAME')
@@ -94,13 +94,23 @@ def get_api_base_url():
         "Either VITE_API_BASE_URL (MarketFit) or REACT_APP_API_URL (SalesWit) "
         "must be set in environment variables"
     )
-WEBHOOK_BASE_URL = get_api_base_url()
+
+# Dynamic webhook and PayPal URL functions
+def get_webhook_base_url():
+    """Get webhook base URL dynamically"""
+    return get_api_base_url()
+
+def get_paypal_return_url():
+    """Get PayPal return URL dynamically"""
+    return f"{get_webhook_base_url()}/api/subscriptions/paypal-success"
+
+def get_paypal_cancel_url():
+    """Get PayPal cancel URL dynamically"""
+    return f"{get_webhook_base_url()}/api/subscriptions/paypal-cancel"
+
 #WEBHOOK_BASE_URL = 'https://mf-backend-a0a5ama9fddqgtd8.centralus-01.azurewebsites.net'
 # ADD these new environment variables
 PAYPAL_WEBHOOK_ID = os.getenv('PAYPAL_WEBHOOK_ID', '')
-# PayPal return URLs
-PAYPAL_RETURN_URL = f"{WEBHOOK_BASE_URL}/api/subscriptions/paypal-success"
-PAYPAL_CANCEL_URL = f"{WEBHOOK_BASE_URL}/api/subscriptions/paypal-cancel"
 
 def get_frontend_url():
     """Get frontend URL for redirects"""
