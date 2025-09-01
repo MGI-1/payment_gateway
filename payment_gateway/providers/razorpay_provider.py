@@ -6,7 +6,7 @@ import json
 import logging
 import traceback
 from datetime import datetime, timedelta
-from ..config import RAZORPAY_KEY_ID, RAZORPAY_KEY_SECRET, WEBHOOK_BASE_URL
+from ..config import RAZORPAY_KEY_ID, RAZORPAY_KEY_SECRET, get_webhook_base_url
 
 logger = logging.getLogger('payment_gateway')
 
@@ -137,7 +137,7 @@ class RazorpayProvider:
                 },
                 'notes': invoice_data.get('notes', {}),
                 # UPDATED: Use dedicated Razorpay callback endpoint
-                'callback_url': f"{WEBHOOK_BASE_URL}/api/subscriptions/razorpay-payment-complete",
+                'callback_url': f"{get_webhook_base_url()}/api/subscriptions/razorpay-payment-complete",
                 'callback_method': 'get'
             }
             

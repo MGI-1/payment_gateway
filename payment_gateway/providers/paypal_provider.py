@@ -10,7 +10,7 @@ import base64
 from datetime import datetime, timedelta
 from ..config import (
     PAYPAL_CLIENT_ID, PAYPAL_CLIENT_SECRET, PAYPAL_BASE_URL,
-    PAYPAL_RETURN_URL, PAYPAL_CANCEL_URL, FLASK_ENV, WEBHOOK_BASE_URL
+    get_paypal_return_url, get_paypal_cancel_url, FLASK_ENV, get_webhook_base_url 
 )
 from ..utils.helpers import generate_id
 
@@ -174,8 +174,8 @@ class PayPalProvider:
                         "payer_selected": "PAYPAL",
                         "payee_preferred": "IMMEDIATE_PAYMENT_REQUIRED"
                     },
-                    "return_url": PAYPAL_RETURN_URL,
-                    "cancel_url": PAYPAL_CANCEL_URL
+                    "return_url": get_paypal_return_url(),
+                    "cancel_url": get_paypal_cancel_url()
                 },
                 "custom_id": f"{app_id}_{customer_info.get('user_id')}"
             }
@@ -314,8 +314,8 @@ class PayPalProvider:
                 "application_context": {
                     "user_action": "SUBSCRIBE_NOW",
                     # ✅ UPDATED: Include subscription_id in return URLs
-                    "return_url": f"{WEBHOOK_BASE_URL}/api/subscriptions/paypal-approval-complete?subscription_id={subscription_id}",
-                    "cancel_url": f"{WEBHOOK_BASE_URL}/api/subscriptions/paypal-approval-cancel?subscription_id={subscription_id}"
+                    "return_url": f"{get_webhook_base_url()}/api/subscriptions/paypal-approval-complete?subscription_id={subscription_id}",
+                    "cancel_url": f"{get_webhook_base_url()}/api/subscriptions/paypal-approval-cancel?subscription_id={subscription_id}"
                 }
             }
             
@@ -383,8 +383,8 @@ class PayPalProvider:
                 }],
                 "application_context": {
                     # UPDATED: Use dedicated PayPal proration endpoints
-                    "return_url": f"{WEBHOOK_BASE_URL}/api/subscriptions/paypal-proration-complete?type=proration",
-                    "cancel_url": f"{WEBHOOK_BASE_URL}/api/subscriptions/paypal-proration-cancel?type=proration"
+                    "return_url": f"{get_webhook_base_url()}/api/subscriptions/paypal-proration-complete?type=proration",
+                    "cancel_url": f"{get_webhook_base_url()}/api/subscriptions/paypal-proration-cancel?type=proration"
                 }
             }
             
