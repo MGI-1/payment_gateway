@@ -81,8 +81,8 @@ def get_api_base_url():
         return react_api_url
     
     # Development fallback
-    if FLASK_ENV == 'development':
-        return 'http://localhost:5000'
+    #if FLASK_ENV == 'development':
+    #    return 'http://localhost:5000'
     
     # Production fallback: Azure App Service provides this automatically
     website_hostname = os.getenv('WEBSITE_HOSTNAME')
