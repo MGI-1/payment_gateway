@@ -5,9 +5,15 @@ import os
 import logging
 from datetime import datetime
 
-# Logging configuration
 def setup_logging(name='payment_gateway', log_file=None):
     """Set up logging for the payment gateway"""
+    # Get log level from environment variable
+    log_level_str = os.getenv('LOG_LEVEL', 'INFO').upper()
+    try:
+        log_level = getattr(logging, log_level_str)
+    except AttributeError:
+        log_level = logging.INFO  # Fallback if invalid level provided
+    
     if log_file is None:
         date_str = datetime.now().strftime('%Y%m%d')
         log_file = f'payment_gateway_{date_str}.log'
@@ -17,11 +23,11 @@ def setup_logging(name='payment_gateway', log_file=None):
     # Check if logger already has handlers to avoid duplicates
     if not logger.handlers:
         handler = logging.FileHandler(log_file)
-        handler.setLevel(logging.INFO)
+        handler.setLevel(log_level)  # Use environment variable
         formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
         handler.setFormatter(formatter)
         logger.addHandler(handler)
-        logger.setLevel(logging.INFO)
+        logger.setLevel(log_level)  # Use environment variable
     
     return logger
 
