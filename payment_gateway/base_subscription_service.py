@@ -966,7 +966,6 @@ class BaseSubscriptionService:
             
             # All statuses that indicate a subscription is not fully active
             problematic_statuses = [
-                'created',          # Initial creation, not yet paid (Razorpay)
                 'pending',          # Payment pending (Razorpay) 
                 'halted',           # Payment failed, subscription suspended (Razorpay)
                 'authenticated',    # Payment method authenticated but not active (Razorpay)
