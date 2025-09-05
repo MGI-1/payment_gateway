@@ -2116,7 +2116,7 @@ class PaymentService(BaseSubscriptionService):
             # Razorpay USD allows plan changes
             response = self.razorpay.client.subscription.edit(razorpay_subscription_id, {
                 'plan_id': razorpay_plan_id
-            })
+            }, timeout=30)
             
             if 'error' in response:
                 raise ValueError(f"Razorpay upgrade failed: {response.get('error', {}).get('description')}")
@@ -2150,7 +2150,7 @@ class PaymentService(BaseSubscriptionService):
             # Update Razorpay subscription directly
             response = self.razorpay.client.subscription.edit(razorpay_subscription_id, {
                 'plan_id': new_razorpay_plan_id
-            })
+            }, timeout=30)
             
             if 'error' in response:
                 raise ValueError(f"Razorpay upgrade failed: {response.get('error', {}).get('description')}")
