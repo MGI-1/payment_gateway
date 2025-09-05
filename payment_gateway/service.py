@@ -58,7 +58,6 @@ class PaymentService(BaseSubscriptionService):
             dict: Subscription details
         """
         logger.info(f"Creating subscription for user {user_id}, plan {plan_id}, app {app_id}")
-        logger.info(f"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAaaaaaaaa")
 
         try:
             # Phase 1: Get required data (separate connections)
@@ -166,14 +165,9 @@ class PaymentService(BaseSubscriptionService):
             if gateway == 'razorpay':
                 gateway_plan_id = plan.get('razorpay_plan_id')
                 
-                # DEBUG: Log the user object and what we're about to pass
-                logger.info(f"[SERVICE DEBUG] user object from database: {user}")
-                logger.info(f"[SERVICE DEBUG] user object types: {[(k, type(v)) for k, v in user.items()] if user else 'None'}")
-                logger.info(f"[SERVICE DEBUG] app_id: {app_id}, type: {type(app_id)}")
                 
                 customer_info = {'user_id': user['google_uid'], 'email': user.get('email'), 'name': user.get('display_name')}
-                logger.info(f"[SERVICE DEBUG] customer_info being passed: {customer_info}")
-                logger.info(f"[SERVICE DEBUG] customer_info types: {[(k, type(v)) for k, v in customer_info.items()]}")
+                logger.debug(f"[SERVICE DEBUG] customer_info being passed: {customer_info}")
                 
                 response = self.razorpay.create_subscription(
                     gateway_plan_id,
@@ -762,7 +756,6 @@ class PaymentService(BaseSubscriptionService):
                 WHERE id = %s
             """, (subscription['id'],))
             
-            logger.info(f"Updated billing period for renewal with {sql_interval}")
             
             conn.commit()
             cursor.close()
@@ -870,7 +863,6 @@ class PaymentService(BaseSubscriptionService):
             conn.close()
             
             logger.info(f"Resource quota reset for plan change: {user_id} → {new_plan['name']} with {sql_interval}")
-            logger.info(f"New quota limits: {new_features}")
             
         except Exception as e:
             logger.error(f"Error resetting quota for plan change: {str(e)}")
@@ -1575,7 +1567,6 @@ class PaymentService(BaseSubscriptionService):
             
             # Generic handling for any payment with subscription_id (fallback)
             if subscription_id:
-                logger.info(f"Creating invoice for subscription payment link: {payment_id}, type: {payment_type or 'unknown'}")
                 invoice_id = self._create_simple_invoice(
                     payment_id,
                     razorpay_invoice_id,
@@ -2116,7 +2107,7 @@ class PaymentService(BaseSubscriptionService):
             # Razorpay USD allows plan changes
             response = self.razorpay.client.subscription.edit(razorpay_subscription_id, {
                 'plan_id': razorpay_plan_id
-            })
+            }, timeout=30)
             
             if 'error' in response:
                 raise ValueError(f"Razorpay upgrade failed: {response.get('error', {}).get('description')}")
@@ -2150,7 +2141,7 @@ class PaymentService(BaseSubscriptionService):
             # Update Razorpay subscription directly
             response = self.razorpay.client.subscription.edit(razorpay_subscription_id, {
                 'plan_id': new_razorpay_plan_id
-            })
+            }, timeout=30)
             
             if 'error' in response:
                 raise ValueError(f"Razorpay upgrade failed: {response.get('error', {}).get('description')}")

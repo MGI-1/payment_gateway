@@ -242,8 +242,6 @@ def init_payment_routes(app, payment_service, paypal_service=None):
             user_id = request.args.get('user_id')
             app_id = request.args.get('app_id', 'marketfit')
             
-            logger.info(f"[AZURE DEBUG] resource-quota params: user_id={user_id}, app_id={app_id}")
-            
             if not user_id:
                 logger.warning("[AZURE DEBUG] Missing user_id parameter")
                 return jsonify({'error': 'User ID is required'}), 400
@@ -626,7 +624,6 @@ def init_payment_routes(app, payment_service, paypal_service=None):
     def upgrade_subscription():
         """Handle upgrade with gateway parameter from frontend"""
         try:
-            logger.info("[UPGRADE] Route started")
             data = request.json
             user_id = data.get('user_id')
             subscription_id = data.get('subscription_id')
@@ -667,15 +664,7 @@ def init_payment_routes(app, payment_service, paypal_service=None):
                 if not usage_data:
                     raise ValueError("Usage data not found")
 
-                # âœ… DEBUG: Log the actual usage data
-                logger.info("=== BILLING DEBUG ===")
-                logger.info(f"usage_data type: {type(usage_data)}")
-                logger.info(f"usage_data keys: {list(usage_data.keys()) if isinstance(usage_data, dict) else 'Not a dict'}")
-                logger.info(f"billing_period_start: {usage_data.get('billing_period_start')} (type: {type(usage_data.get('billing_period_start'))})")
-                logger.info(f"billing_period_end: {usage_data.get('billing_period_end')} (type: {type(usage_data.get('billing_period_end'))})")
-                logger.info(f"Full usage_data: {usage_data}")
-                logger.info("====================")
-
+               
                 # âœ… Method 1: Check using usage_data billing period
                 billing_period_end = usage_data.get('billing_period_end')
                 logger.info(f"[DEBUG] Raw billing_period_end: {billing_period_end}")
@@ -693,11 +682,6 @@ def init_payment_routes(app, payment_service, paypal_service=None):
                     
                     now = datetime.now(billing_end.tzinfo if billing_end.tzinfo else None)
                     two_days_from_now = now + timedelta(days=2)
-                    
-                    logger.info(f"[DEBUG] billing_end: {billing_end}")
-                    logger.info(f"[DEBUG] now: {now}")
-                    logger.info(f"[DEBUG] two_days_from_now: {two_days_from_now}")
-                    logger.info(f"[DEBUG] billing_end <= two_days_from_now: {billing_end <= two_days_from_now}")
                     
                     if billing_end <= two_days_from_now:
                         logger.info(f"[UPGRADE] Billing within 2 days ({billing_end}), blocking upgrade")
@@ -727,18 +711,12 @@ def init_payment_routes(app, payment_service, paypal_service=None):
                     if not paypal_details.get('error'):
                         billing_info = paypal_details.get('billing_info', {})
                         next_billing_time = billing_info.get('next_billing_time')
-                        logger.info(f"[DEBUG] PayPal next_billing_time: {next_billing_time}")
                         
                         if next_billing_time:
                             from datetime import datetime, timedelta
                             next_billing = datetime.fromisoformat(next_billing_time.replace('Z', '+00:00'))
                             now = datetime.now(next_billing.tzinfo)
                             two_days_from_now = now + timedelta(days=2)
-                            
-                            logger.info(f"[DEBUG] PayPal next_billing: {next_billing}")
-                            logger.info(f"[DEBUG] now: {now}")
-                            logger.info(f"[DEBUG] two_days_from_now: {two_days_from_now}")
-                            logger.info(f"[DEBUG] next_billing <= two_days_from_now: {next_billing <= two_days_from_now}")
                             
                             if next_billing <= two_days_from_now:
                                 logger.info(f"[UPGRADE] PayPal billing within 2 days, blocking upgrade")
@@ -776,7 +754,6 @@ def init_payment_routes(app, payment_service, paypal_service=None):
                 )
                 
                 # Use PayPal service for upgrade
-                logger.info("[UPGRADE] Calling paypal_service.handle_upgrade")
                 result = paypal_service.handle_upgrade(
                     user_id, subscription_id, internal_plan_id, app_id,  # ← Changed to internal_plan_id
                     billing_cycle_info, resource_info
@@ -785,21 +762,10 @@ def init_payment_routes(app, payment_service, paypal_service=None):
                 
             elif current_gateway == 'razorpay':
                 # Use main payment service for Razorpay
-                logger.info("[UPGRADE] Calling payment_service.upgrade_subscription")
                 result = payment_service.upgrade_subscription(user_id, subscription_id, internal_plan_id, app_id)  # ← Changed to internal_plan_id
                 logger.info("[UPGRADE] Payment service returned successfully")
             
             # âœ… ADD COMPREHENSIVE RESULT LOGGING
-            logger.info("=== UPGRADE ROUTE RESPONSE DEBUG ===")
-            logger.info(f"Route result type: {type(result)}")
-            logger.info(f"Route result keys: {list(result.keys()) if isinstance(result, dict) else 'Not a dict'}")
-            logger.info(f"Route result success: {result.get('success') if isinstance(result, dict) else 'N/A'}")
-            logger.info(f"Route result requires_approval: {result.get('requires_approval') if isinstance(result, dict) else 'N/A'}")
-            logger.info(f"Route result approval_url: {result.get('approval_url') if isinstance(result, dict) else 'N/A'}")
-            logger.info(f"Route result upgrade_type: {result.get('upgrade_type') if isinstance(result, dict) else 'N/A'}")
-            logger.info(f"Route result message: {result.get('message') if isinstance(result, dict) else 'N/A'}")
-            logger.info(f"Full route result: {json.dumps(result, indent=2, default=str)}")
-            logger.info("=====================================")
             
             return jsonify({'result': result})
             

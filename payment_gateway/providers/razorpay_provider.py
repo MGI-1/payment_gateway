@@ -76,12 +76,12 @@ class RazorpayProvider:
                 notes['redirect_url'] = redirect_url
             
             # DEBUG: Log exactly what we're sending to Razorpay
-            logger.info(f"[RAZORPAY DEBUG] customer_info received: {customer_info}")
-            logger.info(f"[RAZORPAY DEBUG] customer_info types: {[(k, type(v)) for k, v in customer_info.items()]}")
-            logger.info(f"[RAZORPAY DEBUG] app_id: {app_id}, type: {type(app_id)}")
-            logger.info(f"[RAZORPAY DEBUG] notes being sent: {notes}")
-            logger.info(f"[RAZORPAY DEBUG] notes types: {[(k, type(v)) for k, v in notes.items()]}")
-            logger.info(f"[RAZORPAY DEBUG] redirect_url: {redirect_url}")
+            logger.debug(f"[RAZORPAY DEBUG] customer_info received: {customer_info}")
+            logger.debug(f"[RAZORPAY DEBUG] customer_info types: {[(k, type(v)) for k, v in customer_info.items()]}")
+            logger.debug(f"[RAZORPAY DEBUG] app_id: {app_id}, type: {type(app_id)}")
+            logger.debug(f"[RAZORPAY DEBUG] notes being sent: {notes}")
+            logger.debug(f"[RAZORPAY DEBUG] notes types: {[(k, type(v)) for k, v in notes.items()]}")
+            logger.debug(f"[RAZORPAY DEBUG] redirect_url: {redirect_url}")
             
             # Create the Razorpay subscription
             subscription_data = {
@@ -101,7 +101,7 @@ class RazorpayProvider:
             #}
             #subscription_data.update(callback_data)
             
-            logger.info(f"[RAZORPAY DEBUG] Full subscription_data: {subscription_data}")    
+            logger.debug(f"[RAZORPAY DEBUG] Full subscription_data: {subscription_data}")    
             logger.info(f"Creating Razorpay subscription for user {user_id} with plan {plan_id}")
             razorpay_subscription = self.client.subscription.create(subscription_data, timeout=60)
             
