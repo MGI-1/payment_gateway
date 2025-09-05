@@ -110,7 +110,7 @@ class DatabaseManager:
             cursor.close()
             conn.close()
             
-            logger.info(f"Logged subscription action: {action_type} for {subscription_id}")
+            logger.debug(f"Logged subscription action: {action_type} for {subscription_id}")
             return True
             
         except Exception as e:

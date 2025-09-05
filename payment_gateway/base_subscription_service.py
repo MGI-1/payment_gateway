@@ -354,11 +354,7 @@ class BaseSubscriptionService:
             }
         else:  # saleswit
             base_requests = features.get('requests')
-            # ADD THIS DEBUG LOGGING
-            logger.info(f"[QUOTA DEBUG] SalesWit quota calculation:")
-            logger.info(f"[QUOTA DEBUG] features: {features}")
-            logger.info(f"[QUOTA DEBUG] base_requests: {base_requests}")
-            logger.info(f"[QUOTA DEBUG] time_factor: {time_factor}")
+            
             return {
                 'document_pages_quota': 0,
                 'perplexity_requests_quota': 0,

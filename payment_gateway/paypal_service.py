@@ -376,9 +376,6 @@ class PayPalService(BaseSubscriptionService):
                     logger.error(f"[DEBUG] JSON parse error: {e}")
                     metadata = {}
             
-            logger.info(f"[DEBUG] Final metadata: {metadata}")
-            logger.info(f"[DEBUG] Has paypal_approval_required: {metadata.get('paypal_approval_required')}")
-            
             # Handle proration-based approval completion
             if metadata.get('paypal_approval_required'):
                 pending_upgrade = metadata.get('pending_paypal_upgrade', {})
@@ -386,7 +383,6 @@ class PayPalService(BaseSubscriptionService):
                 time_factor = pending_upgrade.get('time_factor', 1.0)
                 
                 logger.info(f"[DEBUG] Pending plan ID: {new_plan_id}")
-                logger.info(f"[DEBUG] Time factor: {time_factor}")
                 
                 if not new_plan_id:
                     return {'error': True, 'message': 'No pending plan found in proration upgrade'}

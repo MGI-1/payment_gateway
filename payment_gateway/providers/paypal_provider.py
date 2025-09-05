@@ -428,37 +428,20 @@ class PayPalProvider:
     
     def _extract_approval_url(self, paypal_response):
         """Extract approval URL from PayPal response if present"""
-        logger.info("=== APPROVAL URL EXTRACTION DEBUG ===")
-        logger.info(f"Input paypal_response type: {type(paypal_response)}")
-        logger.info(f"Input paypal_response keys: {list(paypal_response.keys()) if isinstance(paypal_response, dict) else 'Not a dict'}")
         
         try:
             links = paypal_response.get('links', [])
-            logger.info(f"Links found: {len(links)} items")
-            logger.info(f"Links array: {json.dumps(links, indent=2, default=str)}")
             
             for i, link in enumerate(links):
-                logger.info(f"Link {i}: {link}")
-                logger.info(f"Link {i} type: {type(link)}")
                 if isinstance(link, dict):
-                    logger.info(f"Link {i} rel: {link.get('rel')}")
-                    logger.info(f"Link {i} href: {link.get('href')}")
-                    logger.info(f"Link {i} method: {link.get('method')}")
-                    
                     if link.get('rel') == 'approve':
                         approval_url = link.get('href')
                         logger.info(f"✅ FOUND APPROVAL URL: {approval_url}")
-                        logger.info(f"✅ Approval URL type: {type(approval_url)}")
-                        logger.info(f"✅ Approval URL length: {len(approval_url) if approval_url else 0}")
-                        logger.info("=====================================")
                         return approval_url
                 else:
                     logger.warning(f"Link {i} is not a dict: {type(link)}")
             
             logger.warning("❌ NO APPROVAL LINK FOUND")
-            logger.info("Available rels: " + str([link.get('rel') if isinstance(link, dict) else 'invalid' for link in links]))
-            logger.info("All link data: " + str(links))
-            logger.info("=====================================")
             return None
             
         except Exception as e:
