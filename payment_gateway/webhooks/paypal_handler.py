@@ -34,7 +34,7 @@ def verify_paypal_webhook_signature(headers, payload):
         
         # Production mode - attempt full verification if crypto is available
         if CRYPTO_AVAILABLE:
-            logger.info("Production mode - using full RSA signature verification")
+            #logger.info("Production mode - using full RSA signature verification")
             return _full_paypal_verification(headers, payload)
         else:
             logger.warning("Cryptography not available - falling back to basic verification in production")
