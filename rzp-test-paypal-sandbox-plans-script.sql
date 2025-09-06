@@ -19,3 +19,16 @@ INSERT INTO `subscription_plans` (
 ('SW-Gold-Monthly-USD', 'Gold Monthly Plan', 'Gold access to SalesWit', 10.00, 'USD', 'month', 1, '{"requests": 10}', 'saleswit', 'P-4W791862PT5535151NCQD2UY', 1, '2025-08-24 15:34:00', 'plan_R98gVy0WG2bTpv', 'international', '["paypal", "razorpay"]'),
 ('SW-Platinum-Annual-USD', 'Platinum Annual Plan', 'Platinum access to SalesWit', 150.00, 'USD', 'year', 1, '{"requests": 240}', 'saleswit', 'P-12H70216TK863592RNCQD3OA', 1, '2025-08-24 15:34:00', 'plan_R98gz9o4U491hc', 'international', '["paypal", "razorpay"]'),
 ('SW-Platinum-Monthly-USD', 'Platinum Monthly Plan', 'Platinum access to SalesWit', 15.00, 'USD', 'month', 1, '{"requests": 20}', 'saleswit', 'P-9CN37950PN6624115NCQDZEY', 1, '2025-08-24 15:34:00', 'plan_R98hH8sPBE0F2b', 'international', '["paypal", "razorpay"]');
+
+
+
+
+
+-- Insert test discount offers
+INSERT INTO razorpay_offers (id, discount_percentage, payment_method, offer_id, title, status) VALUES
+('test_upi_20', 20, 'upi', 'offer_Qwt1OtQyCfBGGZ', 'UPI 20% Test Discount', 'enabled'),
+('test_upi_45', 45, 'upi', 'offer_QwtZO2FSl4CJLk', 'UPI 45% Test Discount', 'enabled'),
+('test_upi_65', 65, 'upi', 'offer_QwtaMEUxfA1iuc', 'UPI 65% Test Discount', 'enabled'),
+('test_card_20', 20, 'card', 'offer_Qwtbjl9BQDKTwn', 'Card 20% Test Discount', 'enabled'),
+('test_card_45', 45, 'card', 'offer_QwtcrfYnxoozcl', 'Card 45% Test Discount', 'enabled'),
+('test_card_65', 65, 'card', 'offer_QwtdqylA2nWXxT', 'Card 65% Test Discount', 'enabled');
