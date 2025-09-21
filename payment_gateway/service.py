@@ -972,32 +972,42 @@ class PaymentService(BaseSubscriptionService):
            logger.error(f"Error handling subscription completed: {str(e)}")
            logger.error(traceback.format_exc())
            return {'status': 'error', 'message': str(e)}
-   
+    
     def _handle_razorpay_subscription_cancelled(self, payload):
-       """Handle subscription.cancelled webhook event"""
-       try:
-           subscription_data = self._extract_subscription_data(payload)
-           razorpay_subscription_id = subscription_data.get('id')
-           
-           if not razorpay_subscription_id:
-               logger.error("No subscription ID in cancelled webhook")
-               return {'status': 'error', 'message': 'Missing subscription ID'}
-           
-           subscription = self._get_subscription_by_razorpay_id(razorpay_subscription_id)
-           
-           if not subscription:
-               logger.error(f"Subscription not found for Razorpay ID: {razorpay_subscription_id}")
-               return {'status': 'error', 'message': 'Subscription not found'}
-           
-           self._update_subscription_status(razorpay_subscription_id, 'cancelled', subscription_data)
-           
-           logger.info(f"Subscription cancelled: {razorpay_subscription_id}")
-           return {'status': 'success', 'message': 'Subscription marked as cancelled'}
-           
-       except Exception as e:
-           logger.error(f"Error handling subscription cancelled: {str(e)}")
-           logger.error(traceback.format_exc())
-           return {'status': 'error', 'message': str(e)}
+        """Handle subscription.cancelled webhook event"""
+        try:
+            subscription_data = self._extract_subscription_data(payload)
+            razorpay_subscription_id = subscription_data.get('id')
+            
+            if not razorpay_subscription_id:
+                logger.error("No subscription ID in cancelled webhook")
+                return {'status': 'error', 'message': 'Missing subscription ID'}
+            
+            subscription = self._get_subscription_by_razorpay_id(razorpay_subscription_id)
+            
+            if not subscription:
+                logger.error(f"Subscription not found for Razorpay ID: {razorpay_subscription_id}")
+                return {'status': 'error', 'message': 'Subscription not found'}
+            
+            # Check if this is a scheduled cancellation (end-of-cycle)
+            metadata = subscription.get('metadata', {})
+            if isinstance(metadata, str):
+                try:
+                    metadata = json.loads(metadata)
+                except:
+                    metadata = {}
+            
+            if not metadata.get('cancellation_scheduled'):
+                # Only update status if NOT a scheduled cancellation
+                self._update_subscription_status(razorpay_subscription_id, 'cancelled', subscription_data)
+            
+            logger.info(f"Subscription cancelled: {razorpay_subscription_id}")
+            return {'status': 'success', 'message': 'Subscription marked as cancelled'}
+            
+        except Exception as e:
+            logger.error(f"Error handling subscription cancelled: {str(e)}")
+            logger.error(traceback.format_exc())
+            return {'status': 'error', 'message': str(e)}
    
     def _mark_subscription_cancelled(self, subscription_id, subscription):
        """Mark subscription as cancelled in database"""
